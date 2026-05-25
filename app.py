@@ -14,6 +14,105 @@ from notebooklm import NotebookLMClient, RPCError  # notebooklm-py :contentRefer
 
 
 # ----------------------------
+# Default prompts per artifact type (Chinese output)
+# ----------------------------
+DEFAULT_ARTIFACT_PROMPTS: Dict[str, Dict[str, Any]] = {
+    "slide_deck": {
+        "instructions": (
+            "请用中文生成幻灯片。要求："
+            "1. 标题简洁有力，每页聚焦一个核心主题；"
+            "2. 每页要点不超过5条，语言精炼；"
+            "3. 结构清晰（背景→核心内容→结论/行动建议）；"
+            "4. 关键数据和结论需有来源支撑；"
+            "5. 风格专业，适合商务演示。"
+        ),
+    },
+    "infographic": {
+        "instructions": (
+            "请用中文生成信息图。要求："
+            "1. 视觉层次分明，重点信息突出；"
+            "2. 每个要点文字不超过15字，简洁直观；"
+            "3. 关键数据用图表或数字展示；"
+            "4. 逻辑流程清晰，从问题到结论；"
+            "5. 适合社交媒体或汇报分享。"
+        ),
+    },
+    "report": {
+        "instructions": (
+            "请用中文生成报告。要求："
+            "1. 结构完整：摘要→背景→分析→结论→建议；"
+            "2. 语言专业准确，避免模糊表述；"
+            "3. 所有核心观点需有源材料支撑；"
+            "4. 结论明确，建议可落地执行；"
+            "5. 篇幅适中，重点突出。"
+        ),
+    },
+    "audio": {
+        "instructions": (
+            "请用中文生成音频脚本。要求："
+            "1. 语言自然流畅，符合口语习惯；"
+            "2. 开场30秒内吸引听众注意；"
+            "3. 内容有逻辑递进，易于理解；"
+            "4. 重要概念给出通俗解释；"
+            "5. 结尾有清晰总结和行动建议。"
+        ),
+    },
+    "quiz": {
+        "instructions": (
+            "请用中文生成测验题目。要求："
+            "1. 覆盖源材料的核心知识点；"
+            "2. 题目表述清晰无歧义；"
+            "3. 选项设计合理，干扰项有逻辑；"
+            "4. 每题附带简短答案解析；"
+            "5. 难度适中，兼顾理解与记忆。"
+        ),
+    },
+    "flashcards": {
+        "instructions": (
+            "请用中文生成闪卡。要求："
+            "1. 问题简洁，聚焦单一知识点；"
+            "2. 答案精准简短，不超过50字；"
+            "3. 覆盖源材料所有核心概念；"
+            "4. 适合快速复习和记忆强化；"
+            "5. 难易穿插排列。"
+        ),
+    },
+    "mind_map": {
+        "instructions": (
+            "请用中文生成思维导图。要求："
+            "1. 中心主题明确，一句话概括；"
+            "2. 一级分支3-6个，覆盖核心维度；"
+            "3. 关键词精炼，每节点不超过8字；"
+            "4. 层次不超过3级，避免过度复杂；"
+            "5. 分支间逻辑关系清晰。"
+        ),
+    },
+    "data_table": {
+        "instructions": (
+            "请用中文生成数据表格。要求："
+            "1. 列标题清晰，准确反映数据含义；"
+            "2. 数据准确，来源可追溯；"
+            "3. 按重要性或时间排序；"
+            "4. 数值统一单位；"
+            "5. 包含汇总行或关键统计。"
+        ),
+    },
+    "video": {
+        "instructions": (
+            "请用中文生成视频脚本。要求："
+            "1. 开场直击主题，前10秒抓住注意力；"
+            "2. 内容分段清晰，每段一个核心要点；"
+            "3. 语言生动，适合视频呈现；"
+            "4. 包含画面描述建议；"
+            "5. 结尾有明确总结和引导。"
+        ),
+    },
+}
+
+DEFAULT_CHAT_PREFIX = "请用中文回答。"
+
+
+# ----------------------------
 # Config / Security
 # ----------------------------
 API_KEY = os.environ.get("NOTEBOOKLM_REST_API_KEY", "")  # set this in production
@@ -330,7 +429,10 @@ async def chat_ask(notebook_id: str, req: ChatAskReq):
     client = await get_client()
     async with client:
         try:
-            result = await client.chat.ask(notebook_id, req.question)
+            question = req.question
+            if not question.startswith(DEFAULT_CHAT_PREFIX):
+                question = DEFAULT_CHAT_PREFIX + question
+            result = await client.chat.ask(notebook_id, question)
             # result.answer is shown in docs :contentReference[oaicite:5]{index=5}
             if hasattr(result, "model_dump"):
                 return {"ok": True, "result": result.model_dump()}
@@ -359,7 +461,9 @@ async def generate_artifact(notebook_id: str, req: ArtifactGenerateReq):
     async with client:
         try:
             t = req.type
-            opts = req.options or {}
+            # Merge default prompts with user options (user options take precedence)
+            default_opts = DEFAULT_ARTIFACT_PROMPTS.get(t, {})
+            opts = {**default_opts, **(req.options or {})}
 
             if t == "audio":
                 status = await client.artifacts.generate_audio(notebook_id, **opts)
