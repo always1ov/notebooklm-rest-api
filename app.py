@@ -392,6 +392,32 @@ async def health():
     return {"ok": True}
 
 
+@app.post("/v1/scan")
+async def manual_scan():
+    """Immediately scan WATCH_PATHS and queue all stable mp3 files not already in flight."""
+    if not WATCH_PATHS:
+        return {"ok": False, "detail": "WATCH_PATHS not configured"}
+    queued = []
+    skipped_in_flight = []
+    skipped_unstable = []
+    for path in sorted(_scan_audio_files(WATCH_PATHS)):
+        if path in _in_flight:
+            skipped_in_flight.append(path)
+        elif not _is_file_stable(path):
+            skipped_unstable.append(path)
+        else:
+            _in_flight.add(path)
+            await _transcribe_queue.put((path, None, DOWNSTREAM_WEBHOOK_URL))
+            queued.append(path)
+    return {
+        "ok": True,
+        "queued": queued,
+        "skipped_in_flight": skipped_in_flight,
+        "skipped_unstable": skipped_unstable,
+        "queue_size": _transcribe_queue.qsize(),
+    }
+
+
 # ----------------------------
 # Notebooks
 # ----------------------------
