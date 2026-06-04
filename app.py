@@ -8,10 +8,10 @@ import uuid
 import tempfile
 from typing import Any, Optional, Literal, Dict
 
+import time
 from contextlib import asynccontextmanager
 
 import httpx
-
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -155,7 +155,8 @@ DOWNSTREAM_WEBHOOK_URL = os.environ.get("DOWNSTREAM_WEBHOOK_URL", "")
 # Comma-separated host paths mounted into the container to watch for new audio files.
 WATCH_PATHS: list[str] = [p.strip() for p in os.environ.get("WATCH_PATHS", "").split(",") if p.strip()]
 WATCH_POLL_SECONDS = int(os.environ.get("WATCH_POLL_SECONDS", "30"))
-AUDIO_EXTENSIONS = {".mp3", ".m4a", ".wav", ".aac", ".ogg", ".flac", ".opus", ".mp4"}
+WATCH_MIN_AGE_SECONDS = int(os.environ.get("WATCH_MIN_AGE_SECONDS", "60"))
+AUDIO_EXTENSIONS = {".mp3"}
 # Persisted on the transcriptions volume so it survives container restarts
 WATCHER_STATE_FILE = os.path.join(TRANSCRIPTIONS_FOLDER, ".watcher_state.json")
 
@@ -310,6 +311,15 @@ def _scan_audio_files(paths: list[str]) -> set[str]:
     return found
 
 
+def _is_file_stable(path: str) -> bool:
+    """Returns True only if the file hasn't been modified for WATCH_MIN_AGE_SECONDS.
+    Prevents processing partially-written files that are still being converted."""
+    try:
+        return (time.time() - os.path.getmtime(path)) >= WATCH_MIN_AGE_SECONDS
+    except OSError:
+        return False
+
+
 def _load_seen() -> set[str]:
     try:
         with open(WATCHER_STATE_FILE, "r", encoding="utf-8") as f:
@@ -350,6 +360,9 @@ async def _audio_watch_loop():
         current = _scan_audio_files(WATCH_PATHS)
         new_files = current - seen
         for path in sorted(new_files):
+            if not _is_file_stable(path):
+                print(f"Audio watcher: skipped (still writing) → {path}")
+                continue
             print(f"Audio watcher: queued → {path}")
             await _transcribe_queue.put((path, None, DOWNSTREAM_WEBHOOK_URL))
             seen.add(path)
