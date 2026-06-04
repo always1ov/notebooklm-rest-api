@@ -151,6 +151,7 @@ AUTH_STORAGE_PATH = os.environ.get("NOTEBOOKLM_STORAGE_PATH")
 WATCH_FOLDER = os.environ.get("WATCH_FOLDER", "/uploads")
 TRANSCRIPTIONS_FOLDER = os.environ.get("TRANSCRIPTIONS_FOLDER", "/transcriptions")
 DOWNSTREAM_WEBHOOK_URL = os.environ.get("DOWNSTREAM_WEBHOOK_URL", "")
+NOTIFY_WEBHOOK_URL = os.environ.get("NOTIFY_WEBHOOK_URL", "")
 # Comma-separated host paths mounted into the container to watch for new audio files.
 WATCH_PATHS: list[str] = [p.strip() for p in os.environ.get("WATCH_PATHS", "").split(",") if p.strip()]
 WATCH_POLL_SECONDS = int(os.environ.get("WATCH_POLL_SECONDS", "30"))
@@ -160,6 +161,17 @@ AUDIO_EXTENSIONS = {".mp3"}
 _transcribe_queue: asyncio.Queue = asyncio.Queue()
 # In-memory set of files currently queued or being processed (prevents duplicate queuing)
 _in_flight: set[str] = set()
+
+
+async def _notify(event: str, message: str, detail: str = "") -> None:
+    if not NOTIFY_WEBHOOK_URL:
+        return
+    payload = {"event": event, "message": message, "detail": detail}
+    try:
+        async with httpx.AsyncClient() as http:
+            await http.post(NOTIFY_WEBHOOK_URL, json=payload, timeout=10)
+    except Exception as e:
+        print(f"Notify webhook failed: {e}")
 
 
 def require_api_key(x_api_key: Optional[str] = None):
@@ -190,9 +202,9 @@ async def get_client() -> NotebookLMClient:
 
 
 def map_rpc_error(e: RPCError) -> HTTPException:
-    # notebooklm-py raises RPCError for API failures :contentReference[oaicite:4]{index=4}
     msg = str(e)
     if "401" in msg or "403" in msg or "auth" in msg.lower():
+        asyncio.create_task(_notify("session_expired", "NotebookLM 登录已过期，请重新登录", msg))
         return HTTPException(status_code=401, detail=msg)
     if "rate" in msg.lower() or "429" in msg:
         return HTTPException(status_code=502, detail=msg)
@@ -288,9 +300,12 @@ async def _session_refresh_loop():
                     await browser.close()
                     print("Session refreshed successfully.")
             except Exception as e:
-                print(f"Session refresh failed: {e}")
+                msg = str(e)
+                print(f"Session refresh failed: {msg}")
+                await _notify("session_refresh_failed", "NotebookLM 登录刷新失败，请手动重新登录", msg)
         else:
             print(f"Session refresh skipped: {storage_path} not found.")
+            await _notify("session_file_missing", "storage_state.json 不存在，请重新登录", storage_path)
         await asyncio.sleep(SESSION_REFRESH_SECONDS)
 
 

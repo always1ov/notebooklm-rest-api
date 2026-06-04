@@ -14,6 +14,7 @@ services:
       - TRANSCRIPTIONS_FOLDER=/transcriptions
       - DOWNSTREAM_WEBHOOK_URL=${DOWNSTREAM_WEBHOOK_URL:-}
       - SESSION_REFRESH_HOURS=${SESSION_REFRESH_HOURS:-6}
+      - NOTIFY_WEBHOOK_URL=${NOTIFY_WEBHOOK_URL:-}
     volumes:
       - ./auth:/auth
       - ./watch:/watch                   # mount upstream audio folder here
