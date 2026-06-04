@@ -11,6 +11,8 @@ services:
       - WATCH_FOLDER=/uploads
       - TRANSCRIPTIONS_FOLDER=/transcriptions
       - DOWNSTREAM_WEBHOOK_URL=${DOWNSTREAM_WEBHOOK_URL:-}
+      - WATCH_PATHS=${WATCH_PATHS:-}
+      - WATCH_POLL_SECONDS=${WATCH_POLL_SECONDS:-30}
     volumes:
       - ./auth:/auth
       - ./uploads:/uploads

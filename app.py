@@ -150,6 +150,10 @@ AUTH_STORAGE_PATH = os.environ.get("NOTEBOOKLM_STORAGE_PATH")
 WATCH_FOLDER = os.environ.get("WATCH_FOLDER", "/uploads")
 TRANSCRIPTIONS_FOLDER = os.environ.get("TRANSCRIPTIONS_FOLDER", "/transcriptions")
 DOWNSTREAM_WEBHOOK_URL = os.environ.get("DOWNSTREAM_WEBHOOK_URL", "")
+# Comma-separated host paths mounted into the container to watch for new audio files.
+WATCH_PATHS: list[str] = [p.strip() for p in os.environ.get("WATCH_PATHS", "").split(",") if p.strip()]
+WATCH_POLL_SECONDS = int(os.environ.get("WATCH_POLL_SECONDS", "30"))
+AUDIO_EXTENSIONS = {".mp3", ".m4a", ".wav", ".aac", ".ogg", ".flac", ".opus", ".mp4"}
 
 
 def require_api_key(x_api_key: Optional[str] = None):
@@ -280,15 +284,52 @@ async def _session_refresh_loop():
         await asyncio.sleep(43200)  # 12 hours
 
 
+# ----------------------------
+# Audio file watcher background task
+# ----------------------------
+def _scan_audio_files(paths: list[str]) -> set[str]:
+    found: set[str] = set()
+    for base in paths:
+        if not os.path.isdir(base):
+            continue
+        for root, _dirs, files in os.walk(base):
+            for f in files:
+                if os.path.splitext(f)[1].lower() in AUDIO_EXTENSIONS:
+                    found.add(os.path.join(root, f))
+    return found
+
+
+async def _audio_watch_loop():
+    if not WATCH_PATHS:
+        return
+    await asyncio.sleep(10)  # let app finish startup
+
+    # Snapshot all existing files — treat them as historical, skip processing
+    seen: set[str] = _scan_audio_files(WATCH_PATHS)
+    print(f"Audio watcher: {len(seen)} existing file(s) marked as historical, watching {WATCH_PATHS}")
+
+    while True:
+        await asyncio.sleep(WATCH_POLL_SECONDS)
+        current = _scan_audio_files(WATCH_PATHS)
+        new_files = current - seen
+        for path in sorted(new_files):
+            print(f"Audio watcher: new file detected → {path}")
+            asyncio.create_task(_transcribe_and_notify(path, None, DOWNSTREAM_WEBHOOK_URL))
+            seen.add(path)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    task = asyncio.create_task(_session_refresh_loop())
+    tasks = [asyncio.create_task(_session_refresh_loop())]
+    if WATCH_PATHS:
+        tasks.append(asyncio.create_task(_audio_watch_loop()))
     yield
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
+    for t in tasks:
+        t.cancel()
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
 
 
 # ----------------------------
