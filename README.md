@@ -2,7 +2,7 @@
 
 > A REST API wrapper for Google NotebookLM powered by `notebooklm-py`
 
-Exposes NotebookLM notebook management, source ingestion, Q&A, artifact generation, and audio transcription as a clean HTTP API. Includes built-in Chinese (Simplified) default prompts and automatic session refresh.
+Exposes NotebookLM notebook management, source ingestion, Q&A, artifact generation, and audio transcription as a clean HTTP API. Includes built-in Chinese (Simplified) default prompts, automatic session refresh, and a folder-watching transcription pipeline.
 
 ---
 
@@ -25,9 +25,10 @@ Exposes NotebookLM notebook management, source ingestion, Q&A, artifact generati
 - Task polling and file download
 - Default Chinese prompts per artifact type, overridable via environment variables
 
-### Audio Transcription
+### Audio Transcription Pipeline
 - `POST /v1/transcribe` — upload an audio file, get a Chinese simplified verbatim transcript in one call
-- `POST /v1/webhook/transcribe` — receive upstream webhook, transcribe audio from shared folder, save `.txt`, push result to downstream webhook
+- `POST /v1/webhook/transcribe` — manually enqueue a file for transcription
+- **Folder watcher** — automatically detects new audio files in `WATCH_PATHS`, transcribes them one at a time, saves results as `.txt` files in `TRANSCRIPTIONS_FOLDER`
 
 ### Session Auto-Refresh
 - Built-in background task refreshes `storage_state.json` every 12 hours — no separate container needed
@@ -39,14 +40,13 @@ Exposes NotebookLM notebook management, source ingestion, Q&A, artifact generati
 ## Architecture
 
 ```
-Client (REST)
-    ↓
-FastAPI  +  Background session refresh (every 12 h)
-    ↓
-notebooklm-py
-    ↓
-NotebookLM (Web API)
+[Upstream container]          [notebooklm-rest-api]        [Downstream container]
+writes mp3 to folder    →     detects new mp3 (poll)   →   detects new txt (poll)
+                              transcribes via NotebookLM
+                              saves <name>.txt to folder
 ```
+
+All three stages communicate through **shared host folders** — no direct HTTP calls between containers required.
 
 ---
 
@@ -100,7 +100,7 @@ Swagger UI: `http://localhost:8000/docs`
 
 ## Docker
 
-Single container — session refresh runs inside the API process:
+Single container — session refresh and folder watcher run inside the API process:
 
 ```yaml
 services:
@@ -110,13 +110,29 @@ services:
       - "8000:8000"
     volumes:
       - ./auth:/auth
+      - ./watch:/watch                   # point to upstream audio output folder
+      - ./transcriptions:/transcriptions # downstream reads new .txt files from here
     environment:
       - NOTEBOOKLM_STORAGE_PATH=/auth/storage_state.json
-      - NOTEBOOKLM_REST_API_KEY=your-secret-key
-      - HTTP_PROXY=${HTTP_PROXY:-}
-      - HTTPS_PROXY=${HTTPS_PROXY:-}
+      - WATCH_PATHS=/watch
+      - WATCH_POLL_SECONDS=30
+      - TRANSCRIPTIONS_FOLDER=/transcriptions
     restart: unless-stopped
 ```
+
+**Folder layout on host:**
+```
+your-project/
+├── auth/
+│   └── storage_state.json        # Google session (required)
+├── watch/                        # symlink or volume from upstream
+└── transcriptions/
+    ├── .watcher_state.json       # auto-generated, tracks processed files
+    ├── recording1.txt
+    └── recording2.txt
+```
+
+**Processed file tracking:** on every startup, all audio files currently in `WATCH_PATHS` are recorded as historical and skipped. Only files added after the container starts are transcribed. State is persisted to `TRANSCRIPTIONS_FOLDER/.watcher_state.json` so restarts do not reprocess files.
 
 ---
 
@@ -132,9 +148,10 @@ services:
 | `TRANSCRIBE_PROMPT` | Default transcription instruction |
 | `PROMPT_<TYPE>` | Override default prompt for an artifact type, e.g. `PROMPT_REPORT` |
 | `OUTPUT_FORMAT_<TYPE>` | Override output format for an artifact type, e.g. `OUTPUT_FORMAT_QUIZ=markdown` |
-| `WATCH_FOLDER` | Folder where upstream drops audio files (default: `/uploads`) |
-| `TRANSCRIPTIONS_FOLDER` | Folder where `.txt` transcription results are saved (default: `/transcriptions`) |
-| `DOWNSTREAM_WEBHOOK_URL` | URL to POST transcription results to after processing |
+| `WATCH_PATHS` | Comma-separated container paths to watch for new audio files |
+| `WATCH_POLL_SECONDS` | Polling interval in seconds (default: `30`) |
+| `TRANSCRIPTIONS_FOLDER` | Where to save `.txt` results (default: `/transcriptions`) |
+| `DOWNSTREAM_WEBHOOK_URL` | Optional HTTP endpoint to notify after each transcription |
 
 ---
 
@@ -188,35 +205,13 @@ curl -X POST /v1/transcribe \
 
 Optional parameters: `notebook_id`, `prompt`, `keep_notebook`, `source_wait_seconds` (default 8).
 
-### Webhook Transcribe (upstream → transcribe → downstream)
-
-Upstream calls this endpoint when an MP3 is ready:
+### Manually enqueue a file for transcription
 ```json
 POST /v1/webhook/transcribe
-{
-  "filename": "meeting.mp3",
-  "downstream_webhook_url": "https://your-downstream/webhook"
-}
+{ "filename": "meeting.mp3" }
 ```
 
-- `filepath`: full path inside container (alternative to `filename`)
-- `filename`: file name only — looked up in `WATCH_FOLDER`
-- `prompt`: optional custom transcription instruction
-- `downstream_webhook_url`: overrides `DOWNSTREAM_WEBHOOK_URL` env var
-
-Returns immediately with `{"ok": true, "accepted": true}`. Processing runs in background.
-
-Downstream receives:
-```json
-{
-  "filename": "meeting.mp3",
-  "txt_path": "/transcriptions/meeting.txt",
-  "transcription": "完整转录文字……",
-  "error": null
-}
-```
-
-Every transcription is also persisted to `TRANSCRIPTIONS_FOLDER/{stem}.txt` on the host via volume mount.
+Returns immediately: `{ "ok": true, "accepted": true, "queue_size": 1 }`
 
 ---
 

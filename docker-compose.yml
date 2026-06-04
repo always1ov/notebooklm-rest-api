@@ -8,13 +8,12 @@ services:
       - NOTEBOOKLM_STORAGE_PATH=/auth/storage_state.json
       - HTTP_PROXY=${HTTP_PROXY:-}
       - HTTPS_PROXY=${HTTPS_PROXY:-}
-      - WATCH_FOLDER=/uploads
-      - TRANSCRIPTIONS_FOLDER=/transcriptions
-      - DOWNSTREAM_WEBHOOK_URL=${DOWNSTREAM_WEBHOOK_URL:-}
       - WATCH_PATHS=${WATCH_PATHS:-}
       - WATCH_POLL_SECONDS=${WATCH_POLL_SECONDS:-30}
+      - TRANSCRIPTIONS_FOLDER=/transcriptions
+      - DOWNSTREAM_WEBHOOK_URL=${DOWNSTREAM_WEBHOOK_URL:-}
     volumes:
       - ./auth:/auth
-      - ./uploads:/uploads
-      - ./transcriptions:/transcriptions
+      - ./watch:/watch                   # mount upstream audio folder here
+      - ./transcriptions:/transcriptions # downstream reads new .txt files from here
     restart: unless-stopped
