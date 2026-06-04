@@ -2,7 +2,6 @@
 # Namhyeon Go <gnh1201@catswords.re.kr>
 # https://github.com/gnh1201/notebooklm-rest-api
 import asyncio
-import json
 import os
 import uuid
 import tempfile
@@ -157,11 +156,10 @@ WATCH_PATHS: list[str] = [p.strip() for p in os.environ.get("WATCH_PATHS", "").s
 WATCH_POLL_SECONDS = int(os.environ.get("WATCH_POLL_SECONDS", "30"))
 WATCH_MIN_AGE_SECONDS = int(os.environ.get("WATCH_MIN_AGE_SECONDS", "60"))
 AUDIO_EXTENSIONS = {".mp3"}
-# Persisted on the transcriptions volume so it survives container restarts
-WATCHER_STATE_FILE = os.path.join(TRANSCRIPTIONS_FOLDER, ".watcher_state.json")
-
 # Single-worker queue — files are processed strictly one at a time in order
 _transcribe_queue: asyncio.Queue = asyncio.Queue()
+# In-memory set of files currently queued or being processed (prevents duplicate queuing)
+_in_flight: set[str] = set()
 
 
 def require_api_key(x_api_key: Optional[str] = None):
@@ -320,53 +318,24 @@ def _is_file_stable(path: str) -> bool:
         return False
 
 
-def _load_seen() -> set[str]:
-    try:
-        with open(WATCHER_STATE_FILE, "r", encoding="utf-8") as f:
-            return set(json.load(f).get("seen", []))
-    except Exception:
-        return set()
-
-
-def _save_seen(seen: set[str]) -> None:
-    try:
-        os.makedirs(os.path.dirname(WATCHER_STATE_FILE), exist_ok=True)
-        with open(WATCHER_STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump({"seen": list(seen)}, f)
-    except Exception as e:
-        print(f"Audio watcher: failed to save state: {e}")
-
-
 async def _audio_watch_loop():
     if not WATCH_PATHS:
         return
     await asyncio.sleep(10)  # let app finish startup
-
     os.makedirs(TRANSCRIPTIONS_FOLDER, exist_ok=True)
-
-    # Load previously seen files from disk (survives restarts)
-    seen = _load_seen()
-
-    # Any files on disk not yet recorded are historical — mark them, don't process
-    current = _scan_audio_files(WATCH_PATHS)
-    new_on_disk = current - seen
-    if new_on_disk:
-        seen.update(new_on_disk)
-        _save_seen(seen)
-    print(f"Audio watcher: {len(seen)} historical file(s) on record, watching {WATCH_PATHS}")
+    print(f"Audio watcher: started, watching {WATCH_PATHS}")
 
     while True:
         await asyncio.sleep(WATCH_POLL_SECONDS)
-        current = _scan_audio_files(WATCH_PATHS)
-        new_files = current - seen
-        for path in sorted(new_files):
+        for path in sorted(_scan_audio_files(WATCH_PATHS)):
+            if path in _in_flight:
+                continue  # already queued or processing
             if not _is_file_stable(path):
                 print(f"Audio watcher: skipped (still writing) → {path}")
                 continue
             print(f"Audio watcher: queued → {path}")
+            _in_flight.add(path)
             await _transcribe_queue.put((path, None, DOWNSTREAM_WEBHOOK_URL))
-            seen.add(path)
-            _save_seen(seen)
 
 
 async def _transcribe_worker():
@@ -376,6 +345,7 @@ async def _transcribe_worker():
         try:
             await _transcribe_and_notify(audio_path, prompt, downstream_url)
         finally:
+            _in_flight.discard(audio_path)
             _transcribe_queue.task_done()
 
 
@@ -874,10 +844,15 @@ async def _transcribe_and_notify(audio_path: str, prompt: Optional[str], downstr
         error = str(e)
         print(f"Transcribe error [{filename}]: {e}")
 
-    # Persist to txt
+    # Persist to txt and delete source MP3 on success
     if transcription:
         with open(txt_path, "w", encoding="utf-8") as f:
             f.write(transcription)
+        try:
+            os.remove(audio_path)
+            print(f"Deleted source file: {filename}")
+        except OSError as e:
+            print(f"Could not delete source file [{filename}]: {e}")
 
     # Push to downstream — always include filename and filepath so downstream
     # knows exactly which audio file this result belongs to
