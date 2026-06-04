@@ -6,6 +6,21 @@ services:
     environment:
       - NOTEBOOKLM_REST_API_KEY=${NOTEBOOKLM_REST_API_KEY:-}
       - NOTEBOOKLM_STORAGE_PATH=/auth/storage_state.json
+      - HTTP_PROXY=${HTTP_PROXY:-}
+      - HTTPS_PROXY=${HTTPS_PROXY:-}
     volumes:
       - ./auth:/auth
+    restart: unless-stopped
+
+  refresher:
+    image: ghcr.io/always1ov/notebooklm-rest-api:latest
+    container_name: notebooklm-refresher
+    volumes:
+      - ./auth:/auth
+      - ./refresh_session.py:/refresh_session.py
+    environment:
+      - HTTP_PROXY=${HTTP_PROXY:-}
+      - HTTPS_PROXY=${HTTPS_PROXY:-}
+    entrypoint: ["/bin/sh", "-c"]
+    command: "while true; do python3 /refresh_session.py; sleep 43200; done"
     restart: unless-stopped
