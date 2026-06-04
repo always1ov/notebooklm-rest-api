@@ -279,33 +279,41 @@ class TranscribeWebhookReq(BaseModel):
 SESSION_REFRESH_SECONDS = int(os.environ.get("SESSION_REFRESH_HOURS", "6")) * 3600
 
 
+async def _do_session_refresh() -> tuple[bool, str]:
+    """Perform a single session refresh. Returns (success, message)."""
+    storage_path = AUTH_STORAGE_PATH or os.path.expanduser("~/.notebooklm/storage_state.json")
+    if not os.path.exists(storage_path):
+        msg = f"storage_state.json not found: {storage_path}"
+        print(f"Session refresh skipped: {msg}")
+        await _notify("session_file_missing", "storage_state.json 不存在，请重新登录", storage_path)
+        return False, msg
+    proxy_url = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or ""
+    proxy = {"server": proxy_url} if proxy_url else None
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True, proxy=proxy)
+            ctx = await browser.new_context(storage_state=storage_path)
+            page = await ctx.new_page()
+            await page.goto(
+                "https://notebooklm.google.com/",
+                wait_until="networkidle",
+                timeout=60000,
+            )
+            await ctx.storage_state(path=storage_path)
+            await browser.close()
+        print("Session refreshed successfully.")
+        return True, "ok"
+    except Exception as e:
+        msg = str(e)
+        print(f"Session refresh failed: {msg}")
+        await _notify("session_refresh_failed", "NotebookLM 登录刷新失败，请手动重新登录", msg)
+        return False, msg
+
+
 async def _session_refresh_loop():
     await asyncio.sleep(30)
     while True:
-        storage_path = AUTH_STORAGE_PATH or os.path.expanduser("~/.notebooklm/storage_state.json")
-        if os.path.exists(storage_path):
-            proxy_url = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or ""
-            proxy = {"server": proxy_url} if proxy_url else None
-            try:
-                async with async_playwright() as p:
-                    browser = await p.chromium.launch(headless=True, proxy=proxy)
-                    ctx = await browser.new_context(storage_state=storage_path)
-                    page = await ctx.new_page()
-                    await page.goto(
-                        "https://notebooklm.google.com/",
-                        wait_until="networkidle",
-                        timeout=60000,
-                    )
-                    await ctx.storage_state(path=storage_path)
-                    await browser.close()
-                    print("Session refreshed successfully.")
-            except Exception as e:
-                msg = str(e)
-                print(f"Session refresh failed: {msg}")
-                await _notify("session_refresh_failed", "NotebookLM 登录刷新失败，请手动重新登录", msg)
-        else:
-            print(f"Session refresh skipped: {storage_path} not found.")
-            await _notify("session_file_missing", "storage_state.json 不存在，请重新登录", storage_path)
+        await _do_session_refresh()
         await asyncio.sleep(SESSION_REFRESH_SECONDS)
 
 
@@ -460,6 +468,16 @@ code{font-family:'Cascadia Code','Fira Code',monospace;color:#a5f3fc}
   <div class="card-body">
     <p>扫描 WATCH_PATHS 目录，把所有稳定的 mp3 文件立即加入转录队列，不用等下次轮询。</p>
     <pre><code>curl -X POST https://notebooklm.always1ov.com/v1/scan</code><button class="copy-btn" onclick="copy(this)">复制</button></pre>
+  </div>
+</div>
+<div class="card">
+  <div class="card-header" onclick="toggle(this)">
+    <span class="method post">POST</span><span class="path">/v1/refresh-session</span>
+    <span class="desc">立即刷新 Google 登录 session（不等定时器）</span>
+  </div>
+  <div class="card-body">
+    <p>遇到登录过期时使用。上传新的 storage_state.json 后，调用此接口让服务立即重新读取并刷新 session，无需重启容器。</p>
+    <pre><code>curl -X POST https://notebooklm.always1ov.com/v1/refresh-session</code><button class="copy-btn" onclick="copy(this)">复制</button></pre>
   </div>
 </div>
 </div>
@@ -651,6 +669,13 @@ async def manual_scan():
         "skipped_unstable": skipped_unstable,
         "queue_size": _transcribe_queue.qsize(),
     }
+
+
+@app.post("/v1/refresh-session")
+async def manual_refresh_session():
+    """Immediately trigger a Playwright session refresh without waiting for the scheduled interval."""
+    ok, msg = await _do_session_refresh()
+    return {"ok": ok, "detail": msg}
 
 
 # ----------------------------
@@ -1119,6 +1144,8 @@ async def _transcribe_and_notify(audio_path: str, prompt: Optional[str], downstr
     except Exception as e:
         error = str(e)
         print(f"Transcribe error [{filename}]: {e}")
+        if any(k in error.lower() for k in ("401", "403", "auth", "expired", "invalid")):
+            await _notify("session_expired", f"转录失败（登录已过期）：{filename}", error)
 
     # Persist to txt and delete source MP3 on success
     if transcription:
