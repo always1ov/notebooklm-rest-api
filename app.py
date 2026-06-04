@@ -158,6 +158,7 @@ WATCH_PATHS: list[str] = [p.strip() for p in os.environ.get("WATCH_PATHS", "").s
 WATCH_POLL_SECONDS = int(os.environ.get("WATCH_POLL_SECONDS", "30"))
 WATCH_MIN_AGE_SECONDS = int(os.environ.get("WATCH_MIN_AGE_SECONDS", "60"))
 AUDIO_EXTENSIONS = {".mp3"}
+# SESSION_REFRESH_HOURS is no longer used — session is refreshed on-demand when auth fails
 # Single-worker queue — files are processed strictly one at a time in order
 _transcribe_queue: asyncio.Queue = asyncio.Queue()
 # In-memory set of files currently queued or being processed (prevents duplicate queuing)
@@ -275,11 +276,8 @@ class TranscribeWebhookReq(BaseModel):
 
 
 # ----------------------------
-# Session auto-refresh background task
+# Session refresh (on-demand only — called when auth error occurs)
 # ----------------------------
-SESSION_REFRESH_SECONDS = int(os.environ.get("SESSION_REFRESH_HOURS", "2")) * 3600
-
-
 async def _do_session_refresh() -> tuple[bool, str]:
     """Check session via API first; only open a browser if the session has actually expired.
     Returns (success, message)."""
@@ -349,13 +347,6 @@ async def _do_session_refresh() -> tuple[bool, str]:
         return False, msg
 
 
-async def _session_refresh_loop():
-    await asyncio.sleep(30)
-    while True:
-        await _do_session_refresh()
-        await asyncio.sleep(SESSION_REFRESH_SECONDS)
-
-
 # ----------------------------
 # Audio file watcher background task
 # ----------------------------
@@ -414,7 +405,6 @@ async def _transcribe_worker():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     tasks = [
-        asyncio.create_task(_session_refresh_loop()),
         asyncio.create_task(_transcribe_worker()),
     ]
     if WATCH_PATHS:
@@ -1297,6 +1287,26 @@ async def transcribe_audio(
 # ----------------------------
 # Webhook: upstream notifies → transcribe → save txt → push downstream
 # ----------------------------
+_AUTH_KEYS = ("401", "403", "auth", "expired", "invalid", "sid", "cookie")
+
+
+async def _run_transcription(audio_path: str, q: str) -> Optional[str]:
+    """Run one transcription attempt. Returns the transcription text or raises."""
+    client = await NotebookLMClient.from_storage(AUTH_STORAGE_PATH) if AUTH_STORAGE_PATH else await NotebookLMClient.from_storage()
+    async with client:
+        nb = await client.notebooks.create(f"tr_{uuid.uuid4().hex[:8]}")
+        nb_id = getattr(nb, "id", None) or (nb.model_dump() if hasattr(nb, "model_dump") else nb.__dict__).get("id")
+        await client.sources.add_file(nb_id, audio_path)
+        await asyncio.sleep(30)
+        result = await client.chat.ask(nb_id, q)
+        transcription = getattr(result, "answer", None)
+        try:
+            await client.notebooks.delete(nb_id)
+        except Exception:
+            pass
+        return transcription
+
+
 async def _transcribe_and_notify(audio_path: str, prompt: Optional[str], downstream_url: str):
     filename = os.path.basename(audio_path)
     stem = os.path.splitext(filename)[0]
@@ -1305,27 +1315,29 @@ async def _transcribe_and_notify(audio_path: str, prompt: Optional[str], downstr
 
     transcription: Optional[str] = None
     error: Optional[str] = None
+    q = prompt or os.environ.get("TRANSCRIBE_PROMPT", DEFAULT_TRANSCRIBE_PROMPT)
 
     print(f"Transcribing: {filename}")
     try:
-        q = prompt or os.environ.get("TRANSCRIBE_PROMPT", DEFAULT_TRANSCRIBE_PROMPT)
-        client = await NotebookLMClient.from_storage(AUTH_STORAGE_PATH) if AUTH_STORAGE_PATH else await NotebookLMClient.from_storage()
-        async with client:
-            nb = await client.notebooks.create(f"tr_{uuid.uuid4().hex[:8]}")
-            nb_id = getattr(nb, "id", None) or (nb.model_dump() if hasattr(nb, "model_dump") else nb.__dict__).get("id")
-            await client.sources.add_file(nb_id, audio_path)
-            await asyncio.sleep(30)
-            result = await client.chat.ask(nb_id, q)
-            transcription = getattr(result, "answer", None)
-            try:
-                await client.notebooks.delete(nb_id)
-            except Exception:
-                pass
+        transcription = await _run_transcription(audio_path, q)
     except Exception as e:
         error = str(e)
-        print(f"Transcribe error [{filename}]: {e}")
-        if any(k in error.lower() for k in ("401", "403", "auth", "expired", "invalid")):
-            await _notify("session_expired", f"转录失败（登录已过期）：{filename}", error)
+        if any(k in error.lower() for k in _AUTH_KEYS):
+            print(f"Auth error [{filename}], refreshing session and retrying...")
+            ok, refresh_msg = await _do_session_refresh()
+            if ok:
+                try:
+                    transcription = await _run_transcription(audio_path, q)
+                    error = None
+                    print(f"Retry succeeded after session refresh: {filename}")
+                except Exception as e2:
+                    error = str(e2)
+                    print(f"Retry failed after session refresh [{filename}]: {e2}")
+            else:
+                error = f"Session refresh failed: {refresh_msg}"
+                await _notify("session_expired", f"登录过期且刷新失败，请手动重新登录", refresh_msg)
+        else:
+            print(f"Transcribe error [{filename}]: {e}")
 
     # Persist to txt and delete source MP3 on success
     if transcription:
