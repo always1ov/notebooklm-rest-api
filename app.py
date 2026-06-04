@@ -454,15 +454,6 @@ code{font-family:'Cascadia Code','Fira Code',monospace;color:#a5f3fc}
 .status-bar{display:flex;align-items:center;gap:8px;margin-left:auto}
 #status-dot{width:8px;height:8px;border-radius:50%;background:#64748b;flex-shrink:0}
 #status-dot.ok{background:#34d399}#status-dot.err{background:#f87171}
-/* maintenance upload card */
-.upload-zone{border:2px dashed #2d3148;border-radius:8px;padding:24px;text-align:center;cursor:pointer;transition:border-color .2s,background .2s;margin-bottom:12px}
-.upload-zone:hover,.upload-zone.drag{border-color:#60a5fa;background:#131929}
-.upload-zone input{display:none}
-.upload-zone .label{font-size:.9rem;color:#94a3b8}
-.upload-zone .label b{color:#60a5fa}
-.upload-result{font-size:.85rem;padding:10px 14px;border-radius:6px;margin-top:10px;display:none}
-.upload-result.ok{background:#052e16;color:#34d399;border:1px solid #166534}
-.upload-result.err{background:#2d0a0a;color:#f87171;border:1px solid #7f1d1d}
 .btn{display:inline-flex;align-items:center;gap:6px;padding:7px 16px;border-radius:6px;border:none;cursor:pointer;font-size:.85rem;font-weight:600;transition:opacity .15s}
 .btn:hover{opacity:.85}
 .btn-primary{background:#2563eb;color:#fff}
@@ -487,36 +478,25 @@ code{font-family:'Cascadia Code','Fira Code',monospace;color:#a5f3fc}
 <div class="section-title">登录维护</div>
 
 <div class="card" style="border-color:#3d4268">
-  <div class="card-header" onclick="toggle(this)" style="background:#131929">
-    <span class="method post" style="background:#4c1d95;color:#c4b5fd">上传</span>
-    <span class="path">/v1/upload-session</span>
-    <span class="desc" style="color:#c4b5fd">更新 storage_state.json 并立即验证登录</span>
+  <div class="card-header" style="background:#131929;cursor:default">
+    <span style="font-size:.85rem;color:#c4b5fd;font-weight:600">登录过期时的操作步骤</span>
   </div>
   <div class="card-body open" style="background:#0c0e1a">
-    <p style="margin-bottom:16px">收到登录过期通知后，在 Windows 重新登录，把新的 <code style="color:#c4b5fd">storage_state.json</code> 上传到这里，系统会自动写入并验证。</p>
     <ol class="steps">
-      <li>Windows 运行 <code>python -m notebooklm login</code>，浏览器登录 Google</li>
-      <li>找到生成的文件：<code>C:\\Users\\你的用户名\\.notebooklm\\storage_state.json</code></li>
-      <li>用下方表单上传，等待验证结果</li>
+      <li>Windows 运行 <code>python -m notebooklm login</code>，浏览器弹出后登录 Google</li>
+      <li>把生成的文件复制到 NAS 覆盖旧文件：<br><code style="color:#94a3b8">notebooklm/auth/storage_state.json</code></li>
+      <li>调用下面的接口立刻验证生效，无需重启容器</li>
     </ol>
-    <div class="upload-zone" id="dropzone" onclick="document.getElementById('sess-file').click()" ondragover="ev(event,'drag')" ondragleave="ev(event,'')" ondrop="drop(event)">
-      <input type="file" id="sess-file" accept=".json,application/json" onchange="uploadSession(this.files[0])">
-      <div class="label">点击选择文件，或把 <b>storage_state.json</b> 拖到这里</div>
-    </div>
-    <div id="upload-result" class="upload-result"></div>
-    <p style="margin-top:16px;font-size:.8rem;color:#475569">也可以用 curl：</p>
-    <pre><code>curl -X POST https://notebooklm.always1ov.com/v1/upload-session \\
-  -F "upload=@storage_state.json"</code><button class="copy-btn" onclick="copy(this)">复制</button></pre>
   </div>
 </div>
 
 <div class="card">
   <div class="card-header" onclick="toggle(this)">
     <span class="method post">POST</span><span class="path">/v1/refresh-session</span>
-    <span class="desc">立即触发定时刷新（文件已在服务器时用）</span>
+    <span class="desc">立刻读取新文件并验证登录是否有效</span>
   </div>
   <div class="card-body">
-    <p>无需上传文件。直接触发一次 Playwright 刷新 + API 验证，适合想提前刷新或排查问题时使用。</p>
+    <p>放好新文件后调一次，会触发 Playwright 刷新 + API 验证，返回 <code>{"ok":true}</code> 说明成功。</p>
     <pre><code>curl -X POST https://notebooklm.always1ov.com/v1/refresh-session</code><button class="copy-btn" onclick="copy(this)">复制</button></pre>
   </div>
 </div>
@@ -701,21 +681,6 @@ function copy(btn){
   const code=btn.previousElementSibling||btn.parentElement.querySelector('code');
   navigator.clipboard.writeText(code.innerText).then(()=>{btn.textContent='已复制';setTimeout(()=>btn.textContent='复制',1500)})
 }
-function ev(e,cls){e.preventDefault();document.getElementById('dropzone').className='upload-zone '+cls}
-function drop(e){e.preventDefault();document.getElementById('dropzone').className='upload-zone';const f=e.dataTransfer.files[0];if(f)uploadSession(f)}
-function uploadSession(file){
-  if(!file)return;
-  const res=document.getElementById('upload-result');
-  res.className='upload-result';res.style.display='block';res.textContent='上传中，请稍等（约30秒验证）...';
-  const fd=new FormData();fd.append('upload',file);
-  fetch('/v1/upload-session',{method:'POST',body:fd})
-    .then(r=>r.json())
-    .then(d=>{
-      if(d.ok){res.className='upload-result ok';res.textContent='✓ 登录验证成功，session 已更新！'}
-      else{res.className='upload-result err';res.textContent='✗ 验证失败：'+d.detail}
-    })
-    .catch(e=>{res.className='upload-result err';res.textContent='✗ 上传出错：'+e})
-}
 fetch('/health').then(r=>r.json()).then(()=>{
   document.getElementById('status-dot').className='ok';
   document.getElementById('status-text').textContent='服务正常';
@@ -758,25 +723,6 @@ async def manual_scan():
 @app.post("/v1/refresh-session")
 async def manual_refresh_session():
     """Immediately trigger a Playwright session refresh without waiting for the scheduled interval."""
-    ok, msg = await _do_session_refresh()
-    return {"ok": ok, "detail": msg}
-
-
-@app.post("/v1/upload-session")
-async def upload_session(upload: UploadFile = File(...)):
-    """Upload a new storage_state.json, write it to NOTEBOOKLM_STORAGE_PATH,
-    then immediately refresh and verify the session."""
-    import json as _json
-    content = await upload.read()
-    try:
-        _json.loads(content)
-    except Exception:
-        raise HTTPException(status_code=400, detail="File is not valid JSON")
-    storage_path = AUTH_STORAGE_PATH or os.path.expanduser("~/.notebooklm/storage_state.json")
-    os.makedirs(os.path.dirname(os.path.abspath(storage_path)), exist_ok=True)
-    with open(storage_path, "wb") as f:
-        f.write(content)
-    print(f"storage_state.json replaced via upload ({len(content)} bytes).")
     ok, msg = await _do_session_refresh()
     return {"ok": ok, "detail": msg}
 
