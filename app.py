@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 
 import httpx
 
-from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form, HTTPException, Depends
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from playwright.async_api import async_playwright
@@ -155,12 +155,11 @@ DOWNSTREAM_WEBHOOK_URL = os.environ.get("DOWNSTREAM_WEBHOOK_URL", "")
 WATCH_PATHS: list[str] = [p.strip() for p in os.environ.get("WATCH_PATHS", "").split(",") if p.strip()]
 WATCH_POLL_SECONDS = int(os.environ.get("WATCH_POLL_SECONDS", "30"))
 AUDIO_EXTENSIONS = {".mp3", ".m4a", ".wav", ".aac", ".ogg", ".flac", ".opus", ".mp4"}
-TRANSCRIBE_CONCURRENCY = int(os.environ.get("TRANSCRIBE_CONCURRENCY", "2"))
 # Persisted on the transcriptions volume so it survives container restarts
 WATCHER_STATE_FILE = os.path.join(TRANSCRIPTIONS_FOLDER, ".watcher_state.json")
 
-# Semaphore shared across all transcription tasks (file watcher + webhook)
-_transcribe_sem: asyncio.Semaphore | None = None
+# Single-worker queue — files are processed strictly one at a time in order
+_transcribe_queue: asyncio.Queue = asyncio.Queue()
 
 
 def require_api_key(x_api_key: Optional[str] = None):
@@ -333,7 +332,7 @@ async def _audio_watch_loop():
     # Load previously seen files from disk (survives restarts)
     seen = _load_seen()
 
-    # Any files that exist now but aren't recorded yet are historical — mark them, don't process
+    # Any files on disk not yet recorded are historical — mark them, don't process
     current = _scan_audio_files(WATCH_PATHS)
     new_on_disk = current - seen
     if new_on_disk:
@@ -346,17 +345,28 @@ async def _audio_watch_loop():
         current = _scan_audio_files(WATCH_PATHS)
         new_files = current - seen
         for path in sorted(new_files):
-            print(f"Audio watcher: new file detected → {path}")
-            asyncio.create_task(_transcribe_and_notify(path, None, DOWNSTREAM_WEBHOOK_URL))
+            print(f"Audio watcher: queued → {path}")
+            await _transcribe_queue.put((path, None, DOWNSTREAM_WEBHOOK_URL))
             seen.add(path)
-            _save_seen(seen)  # persist immediately after each new file
+            _save_seen(seen)
+
+
+async def _transcribe_worker():
+    """Single worker — pulls from the queue and processes one file at a time."""
+    while True:
+        audio_path, prompt, downstream_url = await _transcribe_queue.get()
+        try:
+            await _transcribe_and_notify(audio_path, prompt, downstream_url)
+        finally:
+            _transcribe_queue.task_done()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _transcribe_sem
-    _transcribe_sem = asyncio.Semaphore(TRANSCRIBE_CONCURRENCY)
-    tasks = [asyncio.create_task(_session_refresh_loop())]
+    tasks = [
+        asyncio.create_task(_session_refresh_loop()),
+        asyncio.create_task(_transcribe_worker()),
+    ]
     if WATCH_PATHS:
         tasks.append(asyncio.create_task(_audio_watch_loop()))
     yield
@@ -819,10 +829,6 @@ async def transcribe_audio(
 # Webhook: upstream notifies → transcribe → save txt → push downstream
 # ----------------------------
 async def _transcribe_and_notify(audio_path: str, prompt: Optional[str], downstream_url: str):
-    global _transcribe_sem
-    if _transcribe_sem is None:
-        _transcribe_sem = asyncio.Semaphore(TRANSCRIBE_CONCURRENCY)
-
     filename = os.path.basename(audio_path)
     stem = os.path.splitext(filename)[0]
     os.makedirs(TRANSCRIPTIONS_FOLDER, exist_ok=True)
@@ -831,25 +837,24 @@ async def _transcribe_and_notify(audio_path: str, prompt: Optional[str], downstr
     transcription: Optional[str] = None
     error: Optional[str] = None
 
-    async with _transcribe_sem:  # limit concurrent NotebookLM sessions
-        print(f"Transcribing: {filename}")
-        try:
-            q = prompt or os.environ.get("TRANSCRIBE_PROMPT", DEFAULT_TRANSCRIBE_PROMPT)
-            client = await NotebookLMClient.from_storage(AUTH_STORAGE_PATH) if AUTH_STORAGE_PATH else await NotebookLMClient.from_storage()
-            async with client:
-                nb = await client.notebooks.create(f"tr_{uuid.uuid4().hex[:8]}")
-                nb_id = getattr(nb, "id", None) or (nb.model_dump() if hasattr(nb, "model_dump") else nb.__dict__).get("id")
-                await client.sources.add_file(nb_id, audio_path)
-                await asyncio.sleep(8)
-                result = await client.chat.ask(nb_id, q)
-                transcription = getattr(result, "answer", None)
-                try:
-                    await client.notebooks.delete(nb_id)
-                except Exception:
-                    pass
-        except Exception as e:
-            error = str(e)
-            print(f"Transcribe error [{filename}]: {e}")
+    print(f"Transcribing: {filename}")
+    try:
+        q = prompt or os.environ.get("TRANSCRIBE_PROMPT", DEFAULT_TRANSCRIBE_PROMPT)
+        client = await NotebookLMClient.from_storage(AUTH_STORAGE_PATH) if AUTH_STORAGE_PATH else await NotebookLMClient.from_storage()
+        async with client:
+            nb = await client.notebooks.create(f"tr_{uuid.uuid4().hex[:8]}")
+            nb_id = getattr(nb, "id", None) or (nb.model_dump() if hasattr(nb, "model_dump") else nb.__dict__).get("id")
+            await client.sources.add_file(nb_id, audio_path)
+            await asyncio.sleep(8)
+            result = await client.chat.ask(nb_id, q)
+            transcription = getattr(result, "answer", None)
+            try:
+                await client.notebooks.delete(nb_id)
+            except Exception:
+                pass
+    except Exception as e:
+        error = str(e)
+        print(f"Transcribe error [{filename}]: {e}")
 
     # Persist to txt
     if transcription:
@@ -875,9 +880,9 @@ async def _transcribe_and_notify(audio_path: str, prompt: Optional[str], downstr
 
 
 @app.post("/v1/webhook/transcribe")
-async def webhook_transcribe(req: TranscribeWebhookReq, background_tasks: BackgroundTasks):
+async def webhook_transcribe(req: TranscribeWebhookReq):
     """
-    Receive upstream notification, transcribe the audio in the background,
+    Receive upstream notification, enqueue the audio file for sequential transcription,
     save result to /transcriptions/<name>.txt, then POST to downstream webhook.
     """
     if req.filepath:
@@ -891,5 +896,6 @@ async def webhook_transcribe(req: TranscribeWebhookReq, background_tasks: Backgr
         raise HTTPException(status_code=404, detail=f"File not found: {audio_path}")
 
     downstream_url = req.downstream_webhook_url or DOWNSTREAM_WEBHOOK_URL
-    background_tasks.add_task(_transcribe_and_notify, audio_path, req.prompt, downstream_url)
-    return {"ok": True, "accepted": True, "file": audio_path}
+    await _transcribe_queue.put((audio_path, req.prompt, downstream_url))
+    queue_size = _transcribe_queue.qsize()
+    return {"ok": True, "accepted": True, "file": audio_path, "queue_size": queue_size}
