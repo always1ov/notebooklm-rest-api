@@ -21,6 +21,9 @@ RUN apt-get update && apt-get install -y \
     libxtst6 \
     libpango-1.0-0 \
     libcairo2 \
+    xvfb \
+    x11vnc \
+    novnc \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
@@ -31,5 +34,5 @@ RUN playwright install chromium --with-deps
 
 COPY . .
 
-EXPOSE 8000
+EXPOSE 8000 6080
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]

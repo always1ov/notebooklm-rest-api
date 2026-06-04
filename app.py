@@ -5,6 +5,7 @@ import asyncio
 import os
 import uuid
 import tempfile
+import subprocess
 from typing import Any, Optional, Literal, Dict
 
 import time
@@ -491,26 +492,39 @@ code{font-family:'Cascadia Code','Fira Code',monospace;color:#a5f3fc}
 <div class="section-title">登录维护</div>
 
 <div class="card" style="border-color:#3d4268">
-  <div class="card-header" style="background:#131929;cursor:default">
-    <span style="font-size:.85rem;color:#c4b5fd;font-weight:600">登录过期时的操作步骤</span>
+  <div class="card-header" onclick="toggle(this)" style="background:#131929">
+    <span class="method post" style="background:#4c1d95;color:#c4b5fd">POST</span>
+    <span class="path">/v1/start-login</span>
+    <span class="desc" style="color:#c4b5fd">在容器内启动浏览器，用网页完成 Google 登录</span>
   </div>
   <div class="card-body open" style="background:#0c0e1a">
     <ol class="steps">
-      <li>Windows 运行 <code>python -m notebooklm login</code>，浏览器弹出后登录 Google</li>
-      <li>把生成的文件复制到 NAS 覆盖旧文件：<br><code style="color:#94a3b8">notebooklm/auth/storage_state.json</code></li>
-      <li>调用下面的接口立刻验证生效，无需重启容器</li>
+      <li>调用此接口，容器内启动虚拟浏览器</li>
+      <li>用电脑浏览器打开 <b>http://192.168.0.168:6080/vnc.html</b></li>
+      <li>看到 Google 登录页面后，手动登录账号</li>
+      <li>登录完成后调 <code>/v1/refresh-session</code> 验证，再调 <code>/v1/stop-login</code> 关闭</li>
     </ol>
+    <pre><code>curl -X POST https://notebooklm.always1ov.com/v1/start-login</code><button class="copy-btn" onclick="copy(this)">复制</button></pre>
   </div>
 </div>
 
 <div class="card">
   <div class="card-header" onclick="toggle(this)">
     <span class="method post">POST</span><span class="path">/v1/refresh-session</span>
-    <span class="desc">立刻读取新文件并验证登录是否有效</span>
+    <span class="desc">登录后验证 session 是否有效</span>
   </div>
   <div class="card-body">
-    <p>放好新文件后调一次，会触发 Playwright 刷新 + API 验证，返回 <code>{"ok":true}</code> 说明成功。</p>
     <pre><code>curl -X POST https://notebooklm.always1ov.com/v1/refresh-session</code><button class="copy-btn" onclick="copy(this)">复制</button></pre>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header" onclick="toggle(this)">
+    <span class="method post">POST</span><span class="path">/v1/stop-login</span>
+    <span class="desc">关闭虚拟浏览器</span>
+  </div>
+  <div class="card-body">
+    <pre><code>curl -X POST https://notebooklm.always1ov.com/v1/stop-login</code><button class="copy-btn" onclick="copy(this)">复制</button></pre>
   </div>
 </div>
 
@@ -738,6 +752,77 @@ async def manual_refresh_session():
     """Immediately trigger a Playwright session refresh without waiting for the scheduled interval."""
     ok, msg = await _do_session_refresh()
     return {"ok": ok, "detail": msg}
+
+
+# ----------------------------
+# In-container browser login via noVNC
+# ----------------------------
+_vnc_procs: list[subprocess.Popen] = []
+
+
+def _kill_vnc():
+    global _vnc_procs
+    for p in _vnc_procs:
+        try:
+            p.kill()
+        except Exception:
+            pass
+    _vnc_procs = []
+
+
+def _start_vnc():
+    """Start Xvfb + x11vnc + websockify (noVNC). Idempotent."""
+    global _vnc_procs
+    _kill_vnc()
+    devnull = subprocess.DEVNULL
+    procs = []
+    procs.append(subprocess.Popen(
+        ["Xvfb", ":99", "-screen", "0", "1280x800x24"],
+        stdout=devnull, stderr=devnull,
+    ))
+    import time; time.sleep(1)
+    procs.append(subprocess.Popen(
+        ["x11vnc", "-display", ":99", "-nopw", "-forever", "-quiet", "-localhost"],
+        stdout=devnull, stderr=devnull,
+    ))
+    time.sleep(1)
+    procs.append(subprocess.Popen(
+        ["websockify", "--web=/usr/share/novnc/", "6080", "localhost:5900"],
+        stdout=devnull, stderr=devnull,
+    ))
+    time.sleep(1)
+    _vnc_procs = procs
+
+
+@app.post("/v1/start-login")
+async def start_login():
+    """Start a virtual browser inside the container for Google login.
+    Open http://<NAS-IP>:6080/vnc.html in your browser to see and interact with it."""
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _start_vnc)
+
+    storage_path = AUTH_STORAGE_PATH or os.path.expanduser("~/.notebooklm/storage_state.json")
+    os.makedirs(os.path.dirname(os.path.abspath(storage_path)), exist_ok=True)
+    env = {**os.environ, "DISPLAY": ":99", "NOTEBOOKLM_STORAGE_PATH": storage_path}
+    await asyncio.get_event_loop().run_in_executor(
+        None,
+        lambda: subprocess.Popen(
+            ["python", "-m", "notebooklm", "login"],
+            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        ),
+    )
+    return {
+        "ok": True,
+        "detail": "浏览器已启动，打开 http://<NAS-IP>:6080/vnc.html 完成 Google 登录，登录后调 /v1/refresh-session 验证",
+    }
+
+
+@app.post("/v1/stop-login")
+async def stop_login():
+    """Stop the noVNC / VNC server started by /v1/start-login."""
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _kill_vnc)
+    return {"ok": True}
 
 
 # ----------------------------
