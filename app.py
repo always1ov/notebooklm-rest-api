@@ -112,6 +112,24 @@ DEFAULT_ARTIFACT_PROMPTS: Dict[str, Dict[str, Any]] = {
 DEFAULT_CHAT_PREFIX = "请用中文回答。"
 
 
+def _get_artifact_opts(artifact_type: str) -> Dict[str, Any]:
+    env_key = f"PROMPT_{artifact_type.upper()}"
+    custom_prompt = os.environ.get(env_key, "").strip()
+    if custom_prompt:
+        return {"instructions": custom_prompt}
+    return DEFAULT_ARTIFACT_PROMPTS.get(artifact_type, {})
+
+
+def _get_output_format(artifact_type: str, user_format: Optional[str]) -> str:
+    if user_format:
+        return user_format
+    return os.environ.get(f"OUTPUT_FORMAT_{artifact_type.upper()}", "json")
+
+
+def _get_chat_prefix() -> str:
+    return os.environ.get("CHAT_LANGUAGE_PREFIX", DEFAULT_CHAT_PREFIX)
+
+
 # ----------------------------
 # Config / Security
 # ----------------------------
@@ -429,9 +447,10 @@ async def chat_ask(notebook_id: str, req: ChatAskReq):
     client = await get_client()
     async with client:
         try:
+            prefix = _get_chat_prefix()
             question = req.question
-            if not question.startswith(DEFAULT_CHAT_PREFIX):
-                question = DEFAULT_CHAT_PREFIX + question
+            if prefix and not question.startswith(prefix):
+                question = prefix + question
             result = await client.chat.ask(notebook_id, question)
             # result.answer is shown in docs :contentReference[oaicite:5]{index=5}
             if hasattr(result, "model_dump"):
@@ -461,9 +480,8 @@ async def generate_artifact(notebook_id: str, req: ArtifactGenerateReq):
     async with client:
         try:
             t = req.type
-            # Merge default prompts with user options (user options take precedence)
-            default_opts = DEFAULT_ARTIFACT_PROMPTS.get(t, {})
-            opts = {**default_opts, **(req.options or {})}
+            # Merge env/default prompts with user options (user options take precedence)
+            opts = {**_get_artifact_opts(t), **(req.options or {})}
 
             if t == "audio":
                 status = await client.artifacts.generate_audio(notebook_id, **opts)
@@ -564,11 +582,13 @@ async def download_artifact(
                 await client.artifacts.download_data_table(notebook_id, out_path, artifact_id=artifact_id)
             elif type == "quiz":
                 await client.artifacts.download_quiz(
-                    notebook_id, out_path, artifact_id=artifact_id, output_format=(output_format or "json")
+                    notebook_id, out_path, artifact_id=artifact_id,
+                    output_format=_get_output_format("quiz", output_format)
                 )
             elif type == "flashcards":
                 await client.artifacts.download_flashcards(
-                    notebook_id, out_path, artifact_id=artifact_id, output_format=(output_format or "json")
+                    notebook_id, out_path, artifact_id=artifact_id,
+                    output_format=_get_output_format("flashcards", output_format)
                 )
             else:
                 raise HTTPException(status_code=400, detail=f"Unsupported type: {type}")
