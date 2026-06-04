@@ -491,40 +491,48 @@ code{font-family:'Cascadia Code','Fira Code',monospace;color:#a5f3fc}
 <div class="section">
 <div class="section-title">登录维护</div>
 
-<div class="card" style="border-color:#3d4268">
-  <div class="card-header" onclick="toggle(this)" style="background:#131929">
-    <span class="method post" style="background:#4c1d95;color:#c4b5fd">POST</span>
-    <span class="path">/v1/start-login</span>
-    <span class="desc" style="color:#c4b5fd">在容器内启动浏览器，用网页完成 Google 登录</span>
-  </div>
-  <div class="card-body open" style="background:#0c0e1a">
-    <ol class="steps">
-      <li>调用此接口，容器内启动虚拟浏览器</li>
-      <li>用电脑浏览器打开 <b>http://192.168.0.168:6080/vnc.html</b></li>
-      <li>看到 Google 登录页面后，手动登录账号</li>
-      <li>登录完成后调 <code>/v1/refresh-session</code> 验证，再调 <code>/v1/stop-login</code> 关闭</li>
-    </ol>
-    <pre><code>curl -X POST https://notebooklm.always1ov.com/v1/start-login</code><button class="copy-btn" onclick="copy(this)">复制</button></pre>
-  </div>
-</div>
+<div class="card" style="border-color:#3d4268;margin-bottom:0;border-bottom-left-radius:0;border-bottom-right-radius:0">
+  <div style="padding:16px 20px;background:#0c0e1a">
+    <p style="font-size:.82rem;color:#94a3b8;margin-bottom:20px">收到登录过期通知后，按以下步骤操作。<b style="color:#c4b5fd">全程在本页面完成，不需要命令行。</b></p>
+    <div style="display:flex;flex-direction:column;gap:12px">
 
-<div class="card">
-  <div class="card-header" onclick="toggle(this)">
-    <span class="method post">POST</span><span class="path">/v1/refresh-session</span>
-    <span class="desc">登录后验证 session 是否有效</span>
-  </div>
-  <div class="card-body">
-    <pre><code>curl -X POST https://notebooklm.always1ov.com/v1/refresh-session</code><button class="copy-btn" onclick="copy(this)">复制</button></pre>
-  </div>
-</div>
+      <div style="display:flex;align-items:flex-start;gap:14px">
+        <div style="flex-shrink:0;width:26px;height:26px;border-radius:50%;background:#1e1b4b;border:1px solid #4c1d95;color:#c4b5fd;font-size:.75rem;font-weight:700;display:flex;align-items:center;justify-content:center">1</div>
+        <div style="flex:1">
+          <p style="font-size:.85rem;color:#e2e8f0;margin-bottom:8px">在本页面点击按钮，容器内部启动一个虚拟浏览器</p>
+          <button onclick="apiCall('POST','/v1/start-login','btn1','res1')" id="btn1" class="btn btn-primary" style="font-size:.82rem">启动登录浏览器</button>
+          <span id="res1" style="margin-left:10px;font-size:.8rem;color:#64748b"></span>
+        </div>
+      </div>
 
-<div class="card">
-  <div class="card-header" onclick="toggle(this)">
-    <span class="method post">POST</span><span class="path">/v1/stop-login</span>
-    <span class="desc">关闭虚拟浏览器</span>
-  </div>
-  <div class="card-body">
-    <pre><code>curl -X POST https://notebooklm.always1ov.com/v1/stop-login</code><button class="copy-btn" onclick="copy(this)">复制</button></pre>
+      <div style="display:flex;align-items:flex-start;gap:14px">
+        <div style="flex-shrink:0;width:26px;height:26px;border-radius:50%;background:#1e1b4b;border:1px solid #4c1d95;color:#c4b5fd;font-size:.75rem;font-weight:700;display:flex;align-items:center;justify-content:center">2</div>
+        <div style="flex:1">
+          <p style="font-size:.85rem;color:#e2e8f0;margin-bottom:8px">点击按钮，在<b>新标签页</b>打开虚拟浏览器画面（内网访问）</p>
+          <a href="http://192.168.0.168:6080/vnc.html" target="_blank" class="btn btn-primary" style="font-size:.82rem;text-decoration:none">打开登录页面</a>
+          <span style="margin-left:10px;font-size:.78rem;color:#64748b">→ 在弹出的页面里用 Google 账号登录</span>
+        </div>
+      </div>
+
+      <div style="display:flex;align-items:flex-start;gap:14px">
+        <div style="flex-shrink:0;width:26px;height:26px;border-radius:50%;background:#1e1b4b;border:1px solid #4c1d95;color:#c4b5fd;font-size:.75rem;font-weight:700;display:flex;align-items:center;justify-content:center">3</div>
+        <div style="flex:1">
+          <p style="font-size:.85rem;color:#e2e8f0;margin-bottom:8px">登录完成后，回到本页点击验证</p>
+          <button onclick="apiCall('POST','/v1/refresh-session','btn3','res3')" id="btn3" class="btn btn-primary" style="font-size:.82rem">验证登录是否成功</button>
+          <span id="res3" style="margin-left:10px;font-size:.8rem;color:#64748b"></span>
+        </div>
+      </div>
+
+      <div style="display:flex;align-items:flex-start;gap:14px">
+        <div style="flex-shrink:0;width:26px;height:26px;border-radius:50%;background:#1e1b4b;border:1px solid #4c1d95;color:#c4b5fd;font-size:.75rem;font-weight:700;display:flex;align-items:center;justify-content:center">4</div>
+        <div style="flex:1">
+          <p style="font-size:.85rem;color:#e2e8f0;margin-bottom:8px">关闭虚拟浏览器，释放资源</p>
+          <button onclick="apiCall('POST','/v1/stop-login','btn4','res4')" id="btn4" class="btn btn-ghost" style="font-size:.82rem">关闭登录浏览器</button>
+          <span id="res4" style="margin-left:10px;font-size:.8rem;color:#64748b"></span>
+        </div>
+      </div>
+
+    </div>
   </div>
 </div>
 
@@ -708,6 +716,24 @@ function copy(btn){
   const code=btn.previousElementSibling||btn.parentElement.querySelector('code');
   navigator.clipboard.writeText(code.innerText).then(()=>{btn.textContent='已复制';setTimeout(()=>btn.textContent='复制',1500)})
 }
+function apiCall(method,path,btnId,resId){
+  const btn=document.getElementById(btnId);
+  const res=document.getElementById(resId);
+  btn.disabled=true; btn.textContent='请稍候...';
+  res.style.color='#64748b'; res.textContent='';
+  fetch(path,{method}).then(r=>r.json()).then(d=>{
+    btn.disabled=false; btn.textContent=btn.textContent.replace('请稍候...', btn.dataset.label||btn.textContent);
+    if(d.ok){res.style.color='#34d399';res.textContent='✓ 成功'}
+    else{res.style.color='#f87171';res.textContent='✗ '+d.detail}
+    // restore button text
+    btn.textContent = btn.getAttribute('data-orig') || btn.textContent;
+  }).catch(e=>{
+    btn.disabled=false;
+    res.style.color='#f87171';res.textContent='✗ 请求失败';
+  })
+}
+// save original button labels
+document.querySelectorAll('[id^=btn]').forEach(b=>b.setAttribute('data-orig',b.textContent));
 fetch('/health').then(r=>r.json()).then(()=>{
   document.getElementById('status-dot').className='ok';
   document.getElementById('status-text').textContent='服务正常';
