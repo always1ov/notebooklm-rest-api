@@ -262,23 +262,27 @@ class TranscribeWebhookReq(BaseModel):
 
 
 # ----------------------------
-# Session auto-refresh background task (every 12 hours)
+# Session auto-refresh background task
 # ----------------------------
+SESSION_REFRESH_SECONDS = int(os.environ.get("SESSION_REFRESH_HOURS", "6")) * 3600
+
+
 async def _session_refresh_loop():
-    # Wait 30 s after startup before the first refresh so the app is ready.
     await asyncio.sleep(30)
     while True:
         storage_path = AUTH_STORAGE_PATH or os.path.expanduser("~/.notebooklm/storage_state.json")
         if os.path.exists(storage_path):
+            proxy_url = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or ""
+            proxy = {"server": proxy_url} if proxy_url else None
             try:
                 async with async_playwright() as p:
-                    browser = await p.chromium.launch(headless=True)
+                    browser = await p.chromium.launch(headless=True, proxy=proxy)
                     ctx = await browser.new_context(storage_state=storage_path)
                     page = await ctx.new_page()
                     await page.goto(
                         "https://notebooklm.google.com/",
                         wait_until="networkidle",
-                        timeout=30000,
+                        timeout=60000,
                     )
                     await ctx.storage_state(path=storage_path)
                     await browser.close()
@@ -287,7 +291,7 @@ async def _session_refresh_loop():
                 print(f"Session refresh failed: {e}")
         else:
             print(f"Session refresh skipped: {storage_path} not found.")
-        await asyncio.sleep(43200)  # 12 hours
+        await asyncio.sleep(SESSION_REFRESH_SECONDS)
 
 
 # ----------------------------
