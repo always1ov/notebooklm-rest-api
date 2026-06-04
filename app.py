@@ -276,17 +276,20 @@ class TranscribeWebhookReq(BaseModel):
 # ----------------------------
 # Session auto-refresh background task
 # ----------------------------
-SESSION_REFRESH_SECONDS = int(os.environ.get("SESSION_REFRESH_HOURS", "6")) * 3600
+SESSION_REFRESH_SECONDS = int(os.environ.get("SESSION_REFRESH_HOURS", "2")) * 3600
 
 
 async def _do_session_refresh() -> tuple[bool, str]:
-    """Perform a single session refresh. Returns (success, message)."""
+    """Refresh the Playwright session then verify it with a real API call.
+    Returns (success, message)."""
     storage_path = AUTH_STORAGE_PATH or os.path.expanduser("~/.notebooklm/storage_state.json")
     if not os.path.exists(storage_path):
         msg = f"storage_state.json not found: {storage_path}"
         print(f"Session refresh skipped: {msg}")
         await _notify("session_file_missing", "storage_state.json 不存在，请重新登录", storage_path)
         return False, msg
+
+    # Step 1: Playwright page visit — renews Google cookies
     proxy_url = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or ""
     proxy = {"server": proxy_url} if proxy_url else None
     try:
@@ -301,12 +304,28 @@ async def _do_session_refresh() -> tuple[bool, str]:
             )
             await ctx.storage_state(path=storage_path)
             await browser.close()
-        print("Session refreshed successfully.")
+        print("Session page visit succeeded, verifying with API call...")
+    except Exception as e:
+        msg = str(e)
+        print(f"Session refresh (page visit) failed: {msg}")
+        await _notify("session_refresh_failed", "NotebookLM 登录刷新失败（页面访问错误），请手动重新登录", msg)
+        return False, msg
+
+    # Step 2: Verify the refreshed session actually works
+    try:
+        client = await NotebookLMClient.from_storage(storage_path)
+        async with client:
+            await client.notebooks.list()
+        print("Session verified successfully.")
         return True, "ok"
     except Exception as e:
         msg = str(e)
-        print(f"Session refresh failed: {msg}")
-        await _notify("session_refresh_failed", "NotebookLM 登录刷新失败，请手动重新登录", msg)
+        print(f"Session refresh (verification) failed: {msg}")
+        await _notify(
+            "session_expired",
+            "NotebookLM 登录已过期，页面刷新成功但 API 验证失败，请重新登录",
+            msg,
+        )
         return False, msg
 
 
