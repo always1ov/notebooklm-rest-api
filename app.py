@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 from playwright.async_api import async_playwright
 
@@ -390,6 +390,241 @@ app = FastAPI(title="NotebookLM REST API (powered by notebooklm-py)", lifespan=l
 @app.get("/health")
 async def health():
     return {"ok": True}
+
+
+@app.get("/", response_class=HTMLResponse)
+async def docs_ui():
+    base = ""  # relative, works behind any domain
+    html = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NotebookLM REST API</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:#0f1117;color:#e2e8f0;line-height:1.6}
+header{background:#1a1d2e;border-bottom:1px solid #2d3148;padding:20px 32px;display:flex;align-items:center;gap:12px}
+header h1{font-size:1.3rem;font-weight:600;color:#a78bfa}
+header span{font-size:.8rem;color:#64748b;margin-left:auto}
+.container{max-width:900px;margin:0 auto;padding:32px 24px}
+.section{margin-bottom:40px}
+.section-title{font-size:.7rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#64748b;margin-bottom:16px;padding-bottom:8px;border-bottom:1px solid #1e2130}
+.card{background:#1a1d2e;border:1px solid #2d3148;border-radius:8px;margin-bottom:12px;overflow:hidden}
+.card-header{display:flex;align-items:center;gap:10px;padding:12px 16px;cursor:pointer;user-select:none}
+.card-header:hover{background:#1e2235}
+.method{font-size:.7rem;font-weight:700;padding:2px 8px;border-radius:4px;min-width:52px;text-align:center}
+.get{background:#064e3b;color:#34d399}.post{background:#1e3a5f;color:#60a5fa}
+.delete{background:#4c1d1d;color:#f87171}.patch{background:#3b2a00;color:#fbbf24}
+.path{font-family:'Cascadia Code','Fira Code',monospace;font-size:.9rem;color:#e2e8f0}
+.desc{font-size:.82rem;color:#94a3b8;margin-left:auto}
+.card-body{padding:16px;border-top:1px solid #2d3148;display:none}
+.card-body.open{display:block}
+.card-body p{font-size:.85rem;color:#94a3b8;margin-bottom:12px}
+pre{background:#0f1117;border:1px solid #2d3148;border-radius:6px;padding:12px;font-size:.8rem;overflow-x:auto;position:relative}
+code{font-family:'Cascadia Code','Fira Code',monospace;color:#a5f3fc}
+.copy-btn{position:absolute;top:8px;right:8px;background:#2d3148;border:none;color:#94a3b8;padding:3px 8px;border-radius:4px;cursor:pointer;font-size:.72rem}
+.copy-btn:hover{background:#3d4268;color:#e2e8f0}
+.tag{display:inline-block;font-size:.7rem;padding:1px 6px;border-radius:3px;margin-right:4px;background:#1e2235;color:#94a3b8;border:1px solid #2d3148}
+.status{display:flex;align-items:center;gap:8px;font-size:.82rem;padding:10px 16px;background:#0f1117;border-top:1px solid #2d3148}
+#status-dot{width:8px;height:8px;border-radius:50%;background:#64748b}
+#status-dot.ok{background:#34d399}#status-dot.err{background:#f87171}
+</style>
+</head>
+<body>
+<header>
+  <h1>NotebookLM REST API</h1>
+  <div class="status" style="margin-left:auto;background:transparent;padding:0">
+    <div id="status-dot"></div>
+    <span id="status-text" style="font-size:.8rem;color:#64748b">检查中...</span>
+  </div>
+</header>
+<div class="container">
+
+<div class="section">
+<div class="section-title">系统</div>
+<div class="card">
+  <div class="card-header" onclick="toggle(this)">
+    <span class="method get">GET</span><span class="path">/health</span>
+    <span class="desc">健康检查</span>
+  </div>
+  <div class="card-body">
+    <pre><code>curl https://notebooklm.always1ov.com/health</code><button class="copy-btn" onclick="copy(this)">复制</button></pre>
+  </div>
+</div>
+<div class="card">
+  <div class="card-header" onclick="toggle(this)">
+    <span class="method post">POST</span><span class="path">/v1/scan</span>
+    <span class="desc">立即扫描并入队所有待转录音频</span>
+  </div>
+  <div class="card-body">
+    <p>扫描 WATCH_PATHS 目录，把所有稳定的 mp3 文件立即加入转录队列，不用等下次轮询。</p>
+    <pre><code>curl -X POST https://notebooklm.always1ov.com/v1/scan</code><button class="copy-btn" onclick="copy(this)">复制</button></pre>
+  </div>
+</div>
+</div>
+
+<div class="section">
+<div class="section-title">笔记本</div>
+<div class="card">
+  <div class="card-header" onclick="toggle(this)">
+    <span class="method get">GET</span><span class="path">/v1/notebooks</span>
+    <span class="desc">列出所有笔记本（同时验证登录状态）</span>
+  </div>
+  <div class="card-body">
+    <pre><code>curl https://notebooklm.always1ov.com/v1/notebooks</code><button class="copy-btn" onclick="copy(this)">复制</button></pre>
+  </div>
+</div>
+<div class="card">
+  <div class="card-header" onclick="toggle(this)">
+    <span class="method post">POST</span><span class="path">/v1/notebooks</span>
+    <span class="desc">创建笔记本</span>
+  </div>
+  <div class="card-body">
+    <pre><code>curl -X POST https://notebooklm.always1ov.com/v1/notebooks \\
+  -H "Content-Type: application/json" \\
+  -d '{"title":"我的笔记本"}'</code><button class="copy-btn" onclick="copy(this)">复制</button></pre>
+  </div>
+</div>
+<div class="card">
+  <div class="card-header" onclick="toggle(this)">
+    <span class="method delete">DELETE</span><span class="path">/v1/notebooks/{id}</span>
+    <span class="desc">删除笔记本</span>
+  </div>
+  <div class="card-body">
+    <pre><code>curl -X DELETE https://notebooklm.always1ov.com/v1/notebooks/{notebook_id}</code><button class="copy-btn" onclick="copy(this)">复制</button></pre>
+  </div>
+</div>
+</div>
+
+<div class="section">
+<div class="section-title">来源</div>
+<div class="card">
+  <div class="card-header" onclick="toggle(this)">
+    <span class="method post">POST</span><span class="path">/v1/notebooks/{id}/sources/text</span>
+    <span class="desc">添加文字来源</span>
+  </div>
+  <div class="card-body">
+    <pre><code>curl -X POST https://notebooklm.always1ov.com/v1/notebooks/{id}/sources/text \\
+  -H "Content-Type: application/json" \\
+  -d '{"title":"标题","content":"内容..."}'</code><button class="copy-btn" onclick="copy(this)">复制</button></pre>
+  </div>
+</div>
+<div class="card">
+  <div class="card-header" onclick="toggle(this)">
+    <span class="method post">POST</span><span class="path">/v1/notebooks/{id}/sources/url</span>
+    <span class="desc">添加网页来源</span>
+  </div>
+  <div class="card-body">
+    <pre><code>curl -X POST https://notebooklm.always1ov.com/v1/notebooks/{id}/sources/url \\
+  -H "Content-Type: application/json" \\
+  -d '{"url":"https://example.com","wait":true}'</code><button class="copy-btn" onclick="copy(this)">复制</button></pre>
+  </div>
+</div>
+<div class="card">
+  <div class="card-header" onclick="toggle(this)">
+    <span class="method post">POST</span><span class="path">/v1/notebooks/{id}/sources/file</span>
+    <span class="desc">上传文件来源</span>
+  </div>
+  <div class="card-body">
+    <pre><code>curl -X POST https://notebooklm.always1ov.com/v1/notebooks/{id}/sources/file \\
+  -F "upload=@/path/to/file.pdf"</code><button class="copy-btn" onclick="copy(this)">复制</button></pre>
+  </div>
+</div>
+</div>
+
+<div class="section">
+<div class="section-title">对话</div>
+<div class="card">
+  <div class="card-header" onclick="toggle(this)">
+    <span class="method post">POST</span><span class="path">/v1/notebooks/{id}/chat/ask</span>
+    <span class="desc">对笔记本内容提问（自动中文回答）</span>
+  </div>
+  <div class="card-body">
+    <pre><code>curl -X POST https://notebooklm.always1ov.com/v1/notebooks/{id}/chat/ask \\
+  -H "Content-Type: application/json" \\
+  -d '{"question":"这段内容讲了什么？"}'</code><button class="copy-btn" onclick="copy(this)">复制</button></pre>
+  </div>
+</div>
+</div>
+
+<div class="section">
+<div class="section-title">转录</div>
+<div class="card">
+  <div class="card-header" onclick="toggle(this)">
+    <span class="method post">POST</span><span class="path">/v1/transcribe</span>
+    <span class="desc">上传音频 → 一步获取中文简体转录文字</span>
+  </div>
+  <div class="card-body">
+    <p>上传音频文件，自动创建临时笔记本，等待 30 秒索引后转录，完成后删除笔记本。</p>
+    <pre><code>curl -X POST https://notebooklm.always1ov.com/v1/transcribe \\
+  -F "upload=@recording.mp3"</code><button class="copy-btn" onclick="copy(this)">复制</button></pre>
+    <p style="margin-top:12px">可选参数：</p>
+    <pre><code>-F "source_wait_seconds=60"   # 等待时间（默认30秒）
+-F "prompt=自定义转录提示词"
+-F "keep_notebook=true"       # 保留笔记本不删除</code><button class="copy-btn" onclick="copy(this)">复制</button></pre>
+  </div>
+</div>
+<div class="card">
+  <div class="card-header" onclick="toggle(this)">
+    <span class="method post">POST</span><span class="path">/v1/webhook/transcribe</span>
+    <span class="desc">手动入队指定文件转录</span>
+  </div>
+  <div class="card-body">
+    <p>将 WATCH_PATHS 中的指定文件立即加入转录队列。</p>
+    <pre><code>curl -X POST https://notebooklm.always1ov.com/v1/webhook/transcribe \\
+  -H "Content-Type: application/json" \\
+  -d '{"filename":"recording.mp3"}'</code><button class="copy-btn" onclick="copy(this)">复制</button></pre>
+  </div>
+</div>
+</div>
+
+<div class="section">
+<div class="section-title">生成内容</div>
+<div class="card">
+  <div class="card-header" onclick="toggle(this)">
+    <span class="method post">POST</span><span class="path">/v1/notebooks/{id}/artifacts/generate</span>
+    <span class="desc">生成内容（报告/思维导图/测验等）</span>
+  </div>
+  <div class="card-body">
+    <p>type 可选：<span class="tag">report</span><span class="tag">mind_map</span><span class="tag">quiz</span><span class="tag">flashcards</span><span class="tag">slide_deck</span><span class="tag">infographic</span><span class="tag">data_table</span><span class="tag">audio</span><span class="tag">video</span></p>
+    <pre><code>curl -X POST https://notebooklm.always1ov.com/v1/notebooks/{id}/artifacts/generate \\
+  -H "Content-Type: application/json" \\
+  -d '{"type":"report","options":{}}'</code><button class="copy-btn" onclick="copy(this)">复制</button></pre>
+  </div>
+</div>
+<div class="card">
+  <div class="card-header" onclick="toggle(this)">
+    <span class="method get">GET</span><span class="path">/v1/notebooks/{id}/artifacts/download</span>
+    <span class="desc">下载生成的内容文件</span>
+  </div>
+  <div class="card-body">
+    <pre><code>curl "https://notebooklm.always1ov.com/v1/notebooks/{id}/artifacts/download?type=report" \\
+  -o report.md</code><button class="copy-btn" onclick="copy(this)">复制</button></pre>
+  </div>
+</div>
+</div>
+
+</div>
+<script>
+function toggle(el){el.nextElementSibling.classList.toggle('open')}
+function copy(btn){
+  const code=btn.previousElementSibling||btn.parentElement.querySelector('code');
+  navigator.clipboard.writeText(code.innerText).then(()=>{
+    btn.textContent='已复制';setTimeout(()=>btn.textContent='复制',1500)
+  })
+}
+fetch('/health').then(r=>r.json()).then(d=>{
+  document.getElementById('status-dot').className='ok';
+  document.getElementById('status-text').textContent='服务正常';
+}).catch(()=>{
+  document.getElementById('status-dot').className='err';
+  document.getElementById('status-text').textContent='无法连接';
+})
+</script>
+</body>
+</html>"""
+    return HTMLResponse(html)
 
 
 @app.post("/v1/scan")
