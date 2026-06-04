@@ -2,6 +2,7 @@
 # Namhyeon Go <gnh1201@catswords.re.kr>
 # https://github.com/gnh1201/notebooklm-rest-api
 import asyncio
+import json
 import os
 import uuid
 import tempfile
@@ -154,6 +155,8 @@ DOWNSTREAM_WEBHOOK_URL = os.environ.get("DOWNSTREAM_WEBHOOK_URL", "")
 WATCH_PATHS: list[str] = [p.strip() for p in os.environ.get("WATCH_PATHS", "").split(",") if p.strip()]
 WATCH_POLL_SECONDS = int(os.environ.get("WATCH_POLL_SECONDS", "30"))
 AUDIO_EXTENSIONS = {".mp3", ".m4a", ".wav", ".aac", ".ogg", ".flac", ".opus", ".mp4"}
+# Persisted on the transcriptions volume so it survives container restarts
+WATCHER_STATE_FILE = os.path.join(TRANSCRIPTIONS_FOLDER, ".watcher_state.json")
 
 
 def require_api_key(x_api_key: Optional[str] = None):
@@ -299,14 +302,40 @@ def _scan_audio_files(paths: list[str]) -> set[str]:
     return found
 
 
+def _load_seen() -> set[str]:
+    try:
+        with open(WATCHER_STATE_FILE, "r", encoding="utf-8") as f:
+            return set(json.load(f).get("seen", []))
+    except Exception:
+        return set()
+
+
+def _save_seen(seen: set[str]) -> None:
+    try:
+        os.makedirs(os.path.dirname(WATCHER_STATE_FILE), exist_ok=True)
+        with open(WATCHER_STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump({"seen": list(seen)}, f)
+    except Exception as e:
+        print(f"Audio watcher: failed to save state: {e}")
+
+
 async def _audio_watch_loop():
     if not WATCH_PATHS:
         return
     await asyncio.sleep(10)  # let app finish startup
 
-    # Snapshot all existing files — treat them as historical, skip processing
-    seen: set[str] = _scan_audio_files(WATCH_PATHS)
-    print(f"Audio watcher: {len(seen)} existing file(s) marked as historical, watching {WATCH_PATHS}")
+    os.makedirs(TRANSCRIPTIONS_FOLDER, exist_ok=True)
+
+    # Load previously seen files from disk (survives restarts)
+    seen = _load_seen()
+
+    # Any files that exist now but aren't recorded yet are historical — mark them, don't process
+    current = _scan_audio_files(WATCH_PATHS)
+    new_on_disk = current - seen
+    if new_on_disk:
+        seen.update(new_on_disk)
+        _save_seen(seen)
+    print(f"Audio watcher: {len(seen)} historical file(s) on record, watching {WATCH_PATHS}")
 
     while True:
         await asyncio.sleep(WATCH_POLL_SECONDS)
@@ -316,6 +345,7 @@ async def _audio_watch_loop():
             print(f"Audio watcher: new file detected → {path}")
             asyncio.create_task(_transcribe_and_notify(path, None, DOWNSTREAM_WEBHOOK_URL))
             seen.add(path)
+            _save_seen(seen)  # persist immediately after each new file
 
 
 @asynccontextmanager
