@@ -8,19 +8,15 @@ services:
       - NOTEBOOKLM_STORAGE_PATH=/auth/storage_state.json
       - HTTP_PROXY=${HTTP_PROXY:-}
       - HTTPS_PROXY=${HTTPS_PROXY:-}
+      - WATCH_PATHS=${WATCH_PATHS:-}
+      - WATCH_POLL_SECONDS=${WATCH_POLL_SECONDS:-30}
+      - WATCH_MIN_AGE_SECONDS=${WATCH_MIN_AGE_SECONDS:-60}
+      - TRANSCRIPTIONS_FOLDER=/transcriptions
+      - DOWNSTREAM_WEBHOOK_URL=${DOWNSTREAM_WEBHOOK_URL:-}
+      - SESSION_REFRESH_HOURS=${SESSION_REFRESH_HOURS:-6}
+      - NOTIFY_WEBHOOK_URL=${NOTIFY_WEBHOOK_URL:-}
     volumes:
       - ./auth:/auth
-    restart: unless-stopped
-
-  refresher:
-    image: ghcr.io/always1ov/notebooklm-rest-api:latest
-    container_name: notebooklm-refresher
-    volumes:
-      - ./auth:/auth
-      - ./refresh_session.py:/refresh_session.py
-    environment:
-      - HTTP_PROXY=${HTTP_PROXY:-}
-      - HTTPS_PROXY=${HTTPS_PROXY:-}
-    entrypoint: ["/bin/sh", "-c"]
-    command: "while true; do python3 /refresh_session.py; sleep 43200; done"
+      - ./watch:/watch                   # mount upstream audio folder here
+      - ./transcriptions:/transcriptions # downstream reads new .txt files from here
     restart: unless-stopped
