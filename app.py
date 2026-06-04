@@ -1,6 +1,7 @@
 # Google NotebookLM REST API wrapper
 # Namhyeon Go <gnh1201@catswords.re.kr>
 # https://github.com/gnh1201/notebooklm-rest-api
+import asyncio
 import os
 import uuid
 import tempfile
@@ -110,6 +111,12 @@ DEFAULT_ARTIFACT_PROMPTS: Dict[str, Dict[str, Any]] = {
 }
 
 DEFAULT_CHAT_PREFIX = "请用中文回答。"
+
+DEFAULT_TRANSCRIBE_PROMPT = (
+    "请给我这段录音的完整中文简体文字原文，"
+    "逐字逐句转录，保持原始语序，"
+    "不要总结或改写，直接输出全文。"
+)
 
 
 def _get_artifact_opts(artifact_type: str) -> Dict[str, Any]:
@@ -603,3 +610,74 @@ async def download_artifact(
             except OSError:
                 pass
             raise map_rpc_error(e)
+
+
+# ----------------------------
+# Transcribe: upload audio → Chinese simplified transcript in one shot
+# ----------------------------
+@app.post("/v1/transcribe")
+async def transcribe_audio(
+    upload: UploadFile = File(...),
+    notebook_id: Optional[str] = Form(None),
+    prompt: Optional[str] = Form(None),
+    keep_notebook: bool = Form(False),
+    source_wait_seconds: int = Form(8),
+):
+    """
+    Upload an audio file and get a Chinese simplified transcription.
+
+    - If notebook_id is omitted, a temporary notebook is created and deleted after transcription
+      (unless keep_notebook=true).
+    - prompt overrides the default transcription instruction.
+    - source_wait_seconds controls how long to wait for NotebookLM to index the audio (default 8 s).
+    """
+    suffix = os.path.splitext(upload.filename or "")[1] or ".mp3"
+    tmp_path = os.path.join(tempfile.gettempdir(), f"tr_{uuid.uuid4().hex}{suffix}")
+    with open(tmp_path, "wb") as f:
+        f.write(await upload.read())
+
+    created_notebook_id: Optional[str] = None
+    client = await get_client()
+    try:
+        async with client:
+            try:
+                # Create a temp notebook if none supplied
+                if not notebook_id:
+                    nb = await client.notebooks.create(f"录音转录_{uuid.uuid4().hex[:8]}")
+                    created_notebook_id = getattr(nb, "id", None) or (nb.model_dump() if hasattr(nb, "model_dump") else nb.__dict__).get("id")
+                    notebook_id = created_notebook_id
+
+                # Upload audio as source
+                await client.sources.add_file(notebook_id, tmp_path)
+
+                # Wait for NotebookLM to index the source
+                await asyncio.sleep(max(1, source_wait_seconds))
+
+                # Ask for transcription
+                q = prompt or os.environ.get("TRANSCRIBE_PROMPT", DEFAULT_TRANSCRIBE_PROMPT)
+                result = await client.chat.ask(notebook_id, q)
+
+                answer = getattr(result, "answer", None)
+                result_data = result.model_dump() if hasattr(result, "model_dump") else getattr(result, "__dict__", {"answer": answer})
+
+                # Clean up temp notebook unless caller wants to keep it
+                returned_notebook_id = notebook_id if keep_notebook else None
+                if created_notebook_id and not keep_notebook:
+                    try:
+                        await client.notebooks.delete(created_notebook_id)
+                    except Exception:
+                        pass
+
+                return {
+                    "ok": True,
+                    "transcription": answer,
+                    "result": result_data,
+                    "notebook_id": returned_notebook_id,
+                }
+            except RPCError as e:
+                raise map_rpc_error(e)
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
