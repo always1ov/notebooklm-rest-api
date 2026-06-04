@@ -830,10 +830,11 @@ async def start_login():
     storage_path = AUTH_STORAGE_PATH or os.path.expanduser("~/.notebooklm/storage_state.json")
     os.makedirs(os.path.dirname(os.path.abspath(storage_path)), exist_ok=True)
     env = {**os.environ, "DISPLAY": ":99", "NOTEBOOKLM_STORAGE_PATH": storage_path}
+    login_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "login_browser.py")
     await asyncio.get_event_loop().run_in_executor(
         None,
         lambda: subprocess.Popen(
-            ["python", "-m", "notebooklm", "login"],
+            ["python", login_script],
             env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         ),
     )
