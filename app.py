@@ -281,7 +281,7 @@ SESSION_REFRESH_SECONDS = int(os.environ.get("SESSION_REFRESH_HOURS", "2")) * 36
 
 
 async def _do_session_refresh() -> tuple[bool, str]:
-    """Refresh the Playwright session then verify it with a real API call.
+    """Check session via API first; only open a browser if the session has actually expired.
     Returns (success, message)."""
     storage_path = AUTH_STORAGE_PATH or os.path.expanduser("~/.notebooklm/storage_state.json")
     if not os.path.exists(storage_path):
@@ -290,56 +290,62 @@ async def _do_session_refresh() -> tuple[bool, str]:
         await _notify("session_file_missing", "storage_state.json 不存在，请重新登录", storage_path)
         return False, msg
 
+    # Step 1: API-only check — no browser, no Google detection risk.
+    # If the stored cookies are still valid, we're done.
+    try:
+        client = await NotebookLMClient.from_storage(storage_path)
+        async with client:
+            await client.notebooks.list()
+        print("Session check passed (API only, no browser opened).")
+        return True, "ok"
+    except Exception:
+        print("Session API check failed, cookies may have expired — starting browser refresh...")
+
+    # Step 2: Cookies expired. Open a browser once to renew them.
     proxy_url = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or ""
     proxy = {"server": proxy_url} if proxy_url else None
-    # Use the persistent browser profile when available — it carries Google's long-lived
-    # tokens so the session is far less likely to expire than with cookies alone.
     profile_dir = os.path.join(os.path.dirname(os.path.abspath(storage_path)), "browser_profile")
     use_profile = os.path.isdir(profile_dir)
 
     try:
         async with async_playwright() as p:
             if use_profile:
-                print(f"Session refresh: using persistent browser profile at {profile_dir}")
+                print(f"Session browser refresh: using persistent profile at {profile_dir}")
                 ctx = await p.chromium.launch_persistent_context(
                     profile_dir,
                     headless=True,
                     proxy=proxy,
+                    args=["--disable-blink-features=AutomationControlled"],
                 )
-                page = await ctx.new_page()
-                await page.goto("https://notebooklm.google.com/", wait_until="networkidle", timeout=60000)
-                await ctx.storage_state(path=storage_path)
-                await ctx.close()
             else:
-                print("Session refresh: browser_profile not found, falling back to storage_state only")
-                browser = await p.chromium.launch(headless=True, proxy=proxy)
+                print("Session browser refresh: no profile found, using storage_state only")
+                browser = await p.chromium.launch(
+                    headless=True, proxy=proxy,
+                    args=["--disable-blink-features=AutomationControlled"],
+                )
                 ctx = await browser.new_context(storage_state=storage_path)
-                page = await ctx.new_page()
-                await page.goto("https://notebooklm.google.com/", wait_until="networkidle", timeout=60000)
-                await ctx.storage_state(path=storage_path)
-                await browser.close()
-        print("Session page visit succeeded, verifying with API call...")
+            page = await ctx.new_page()
+            await page.goto("https://notebooklm.google.com/", wait_until="networkidle", timeout=60000)
+            await ctx.storage_state(path=storage_path)
+            await ctx.close()
+        print("Browser refresh done, re-verifying with API...")
     except Exception as e:
         msg = str(e)
-        print(f"Session refresh (page visit) failed: {msg}")
-        await _notify("session_refresh_failed", "NotebookLM 登录刷新失败（页面访问错误），请手动重新登录", msg)
+        print(f"Session browser refresh failed: {msg}")
+        await _notify("session_refresh_failed", "NotebookLM 登录刷新失败，请手动重新登录", msg)
         return False, msg
 
-    # Verify the refreshed session actually works
+    # Step 3: Verify the browser refresh actually fixed the session.
     try:
         client = await NotebookLMClient.from_storage(storage_path)
         async with client:
             await client.notebooks.list()
-        print("Session verified successfully.")
+        print("Session verified successfully after browser refresh.")
         return True, "ok"
     except Exception as e:
         msg = str(e)
-        print(f"Session refresh (verification) failed: {msg}")
-        await _notify(
-            "session_expired",
-            "NotebookLM 登录已过期，页面刷新成功但 API 验证失败，请重新登录",
-            msg,
-        )
+        print(f"Session still invalid after browser refresh: {msg}")
+        await _notify("session_expired", "NotebookLM 登录已过期，浏览器刷新后仍无效，请重新登录", msg)
         return False, msg
 
 
