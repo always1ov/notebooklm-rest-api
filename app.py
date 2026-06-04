@@ -161,8 +161,6 @@ AUDIO_EXTENSIONS = {".mp3"}
 _transcribe_queue: asyncio.Queue = asyncio.Queue()
 # In-memory set of files currently queued or being processed (prevents duplicate queuing)
 _in_flight: set[str] = set()
-# Last known mtime of storage_state.json — used to detect external file replacement
-_storage_mtime: float = 0.0
 
 
 async def _notify(event: str, message: str, detail: str = "") -> None:
@@ -307,11 +305,6 @@ async def _do_session_refresh() -> tuple[bool, str]:
             )
             await ctx.storage_state(path=storage_path)
             await browser.close()
-        # Record the mtime we just wrote so the storage watcher doesn't re-trigger
-        try:
-            _storage_mtime = os.path.getmtime(storage_path)
-        except OSError:
-            pass
         print("Session page visit succeeded, verifying with API call...")
     except Exception as e:
         msg = str(e)
@@ -342,27 +335,6 @@ async def _session_refresh_loop():
     while True:
         await _do_session_refresh()
         await asyncio.sleep(SESSION_REFRESH_SECONDS)
-
-
-async def _storage_watch_loop():
-    """Detect when storage_state.json is replaced externally and immediately refresh."""
-    global _storage_mtime
-    storage_path = AUTH_STORAGE_PATH or os.path.expanduser("~/.notebooklm/storage_state.json")
-    await asyncio.sleep(5)
-    try:
-        _storage_mtime = os.path.getmtime(storage_path)
-    except OSError:
-        pass
-    while True:
-        await asyncio.sleep(10)
-        try:
-            mtime = os.path.getmtime(storage_path)
-            if mtime > _storage_mtime + 1:
-                print("storage_state.json replaced externally, triggering immediate session refresh...")
-                _storage_mtime = mtime
-                await _do_session_refresh()
-        except OSError:
-            pass
 
 
 # ----------------------------
@@ -424,7 +396,6 @@ async def _transcribe_worker():
 async def lifespan(app: FastAPI):
     tasks = [
         asyncio.create_task(_session_refresh_loop()),
-        asyncio.create_task(_storage_watch_loop()),
         asyncio.create_task(_transcribe_worker()),
     ]
     if WATCH_PATHS:
