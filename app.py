@@ -119,9 +119,10 @@ DEFAULT_ARTIFACT_PROMPTS: Dict[str, Dict[str, Any]] = {
 DEFAULT_CHAT_PREFIX = "请用中文回答。"
 
 DEFAULT_TRANSCRIBE_PROMPT = (
-    "请给我这段录音的完整中文简体文字原文，"
-    "逐字逐句转录，保持原始语序，"
-    "不要总结或改写，直接输出全文。"
+    "请将这段录音逐字转录为中文简体，"
+    "不得使用繁体字，"
+    "不得总结或改写，"
+    "保持原始语序，直接输出全文。"
 )
 
 
@@ -767,7 +768,7 @@ async def transcribe_audio(
     notebook_id: Optional[str] = Form(None),
     prompt: Optional[str] = Form(None),
     keep_notebook: bool = Form(False),
-    source_wait_seconds: int = Form(8),
+    source_wait_seconds: int = Form(30),
 ):
     """
     Upload an audio file and get a Chinese simplified transcription.
@@ -849,7 +850,7 @@ async def _transcribe_and_notify(audio_path: str, prompt: Optional[str], downstr
             nb = await client.notebooks.create(f"tr_{uuid.uuid4().hex[:8]}")
             nb_id = getattr(nb, "id", None) or (nb.model_dump() if hasattr(nb, "model_dump") else nb.__dict__).get("id")
             await client.sources.add_file(nb_id, audio_path)
-            await asyncio.sleep(8)
+            await asyncio.sleep(30)
             result = await client.chat.ask(nb_id, q)
             transcription = getattr(result, "answer", None)
             try:
