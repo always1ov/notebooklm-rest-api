@@ -8,6 +8,14 @@ import os
 
 from playwright.async_api import async_playwright
 
+_SUPPRESS_FLAGS = [
+    "--no-restore-last-session",
+    "--no-first-run",
+    "--disable-session-crashed-bubble",
+    "--disable-infobars",
+    "--disable-blink-features=AutomationControlled",
+]
+
 
 async def main():
     storage_path = os.environ.get("NOTEBOOKLM_STORAGE_PATH", "/auth/storage_state.json")
@@ -23,9 +31,14 @@ async def main():
             profile_dir,
             headless=False,
             proxy=proxy,
+            args=_SUPPRESS_FLAGS,
         )
-        page = await ctx.new_page()
+        # Close any pages restored from the previous session, open one clean page
+        for page in ctx.pages[1:]:
+            await page.close()
+        page = ctx.pages[0] if ctx.pages else await ctx.new_page()
         await page.goto("https://notebooklm.google.com/")
+
         # Keep running and saving state every 5 s so login is captured immediately
         while True:
             try:
