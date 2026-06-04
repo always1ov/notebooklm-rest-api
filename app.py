@@ -12,7 +12,7 @@ import time
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends
+from fastapi import BackgroundTasks, FastAPI, UploadFile, File, Form, HTTPException, Depends
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 from playwright.async_api import async_playwright
@@ -157,6 +157,7 @@ NOTIFY_WEBHOOK_URL = os.environ.get("NOTIFY_WEBHOOK_URL", "")
 WATCH_PATHS: list[str] = [p.strip() for p in os.environ.get("WATCH_PATHS", "").split(",") if p.strip()]
 WATCH_POLL_SECONDS = int(os.environ.get("WATCH_POLL_SECONDS", "30"))
 WATCH_MIN_AGE_SECONDS = int(os.environ.get("WATCH_MIN_AGE_SECONDS", "60"))
+TRANSCRIBE_WAIT_SECONDS = int(os.environ.get("TRANSCRIBE_WAIT_SECONDS", "30"))
 AUDIO_EXTENSIONS = {".mp3"}
 # SESSION_REFRESH_HOURS is no longer used — session is refreshed on-demand when auth fails
 # Single-worker queue — files are processed strictly one at a time in order
@@ -315,6 +316,9 @@ async def _do_session_refresh() -> tuple[bool, str]:
                     proxy=proxy,
                     args=["--disable-blink-features=AutomationControlled"],
                 )
+                for rp in ctx.pages[1:]:
+                    await rp.close()
+                page = ctx.pages[0] if ctx.pages else await ctx.new_page()
             else:
                 print("Session browser refresh: no profile found, using storage_state only")
                 browser = await p.chromium.launch(
@@ -322,7 +326,7 @@ async def _do_session_refresh() -> tuple[bool, str]:
                     args=["--disable-blink-features=AutomationControlled"],
                 )
                 ctx = await browser.new_context(storage_state=storage_path)
-            page = await ctx.new_page()
+                page = await ctx.new_page()
             await page.goto("https://notebooklm.google.com/", wait_until="networkidle", timeout=60000)
             await ctx.storage_state(path=storage_path)
             await ctx.close()
@@ -780,16 +784,23 @@ async def manual_refresh_session():
 # In-container browser login via noVNC
 # ----------------------------
 _vnc_procs: list[subprocess.Popen] = []
+_login_browser_proc: Optional[subprocess.Popen] = None
 
 
 def _kill_vnc():
-    global _vnc_procs
+    global _vnc_procs, _login_browser_proc
     for p in _vnc_procs:
         try:
             p.kill()
         except Exception:
             pass
     _vnc_procs = []
+    if _login_browser_proc is not None:
+        try:
+            _login_browser_proc.kill()
+        except Exception:
+            pass
+        _login_browser_proc = None
 
 
 def _start_vnc():
@@ -802,7 +813,7 @@ def _start_vnc():
         ["Xvfb", ":99", "-screen", "0", "1280x800x24"],
         stdout=devnull, stderr=devnull,
     ))
-    import time; time.sleep(1)
+    time.sleep(1)
     procs.append(subprocess.Popen(
         ["x11vnc", "-display", ":99", "-nopw", "-forever", "-quiet", "-localhost"],
         stdout=devnull, stderr=devnull,
@@ -820,14 +831,15 @@ def _start_vnc():
 async def start_login():
     """Start a virtual browser inside the container for Google login.
     Open http://<NAS-IP>:6080/vnc.html in your browser to see and interact with it."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, _start_vnc)
 
     storage_path = AUTH_STORAGE_PATH or os.path.expanduser("~/.notebooklm/storage_state.json")
     os.makedirs(os.path.dirname(os.path.abspath(storage_path)), exist_ok=True)
     env = {**os.environ, "DISPLAY": ":99", "NOTEBOOKLM_STORAGE_PATH": storage_path}
     login_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "login_browser.py")
-    await asyncio.get_event_loop().run_in_executor(
+    global _login_browser_proc
+    _login_browser_proc = await loop.run_in_executor(
         None,
         lambda: subprocess.Popen(
             ["python", login_script],
@@ -843,7 +855,7 @@ async def start_login():
 @app.post("/v1/stop-login")
 async def stop_login():
     """Stop the noVNC / VNC server started by /v1/start-login."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, _kill_vnc)
     return {"ok": True}
 
@@ -1153,6 +1165,7 @@ async def download_artifact(
     ],
     artifact_id: Optional[str] = None,
     output_format: Optional[Literal["json", "markdown", "html"]] = None,
+    background_tasks: BackgroundTasks = None,
 ):
     """
     Downloads the *first completed* artifact of the given type unless artifact_id is provided.
@@ -1202,9 +1215,10 @@ async def download_artifact(
                 raise HTTPException(status_code=400, detail=f"Unsupported type: {type}")
 
             filename = os.path.basename(out_path)
+            if background_tasks is not None:
+                background_tasks.add_task(os.remove, out_path)
             return FileResponse(out_path, filename=filename)
         except RPCError as e:
-            # Clean up file if partially created
             try:
                 if os.path.exists(out_path):
                     os.remove(out_path)
@@ -1297,13 +1311,13 @@ async def _run_transcription(audio_path: str, q: str) -> Optional[str]:
         nb = await client.notebooks.create(f"tr_{uuid.uuid4().hex[:8]}")
         nb_id = getattr(nb, "id", None) or (nb.model_dump() if hasattr(nb, "model_dump") else nb.__dict__).get("id")
         await client.sources.add_file(nb_id, audio_path)
-        await asyncio.sleep(30)
+        await asyncio.sleep(TRANSCRIBE_WAIT_SECONDS)
         result = await client.chat.ask(nb_id, q)
         transcription = getattr(result, "answer", None)
         try:
             await client.notebooks.delete(nb_id)
-        except Exception:
-            pass
+        except Exception as cleanup_err:
+            print(f"Notebook cleanup failed [{nb_id}]: {cleanup_err}")
         return transcription
 
 
@@ -1333,11 +1347,13 @@ async def _transcribe_and_notify(audio_path: str, prompt: Optional[str], downstr
                 except Exception as e2:
                     error = str(e2)
                     print(f"Retry failed after session refresh [{filename}]: {e2}")
+                    await _notify("transcribe_error", f"会话刷新后重试仍失败: {filename}", error)
             else:
                 error = f"Session refresh failed: {refresh_msg}"
                 await _notify("session_expired", f"登录过期且刷新失败，请手动重新登录", refresh_msg)
         else:
             print(f"Transcribe error [{filename}]: {e}")
+            await _notify("transcribe_error", f"转录失败: {filename}", error)
 
     # Persist to txt and delete source MP3 on success
     if transcription:
@@ -1384,6 +1400,9 @@ async def webhook_transcribe(req: TranscribeWebhookReq):
         raise HTTPException(status_code=404, detail=f"File not found: {audio_path}")
 
     downstream_url = req.downstream_webhook_url or DOWNSTREAM_WEBHOOK_URL
+    if audio_path in _in_flight:
+        return {"ok": True, "accepted": False, "detail": "already queued or processing", "file": audio_path}
+    _in_flight.add(audio_path)
     await _transcribe_queue.put((audio_path, req.prompt, downstream_url))
     queue_size = _transcribe_queue.qsize()
     return {"ok": True, "accepted": True, "file": audio_path, "queue_size": queue_size}
