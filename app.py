@@ -282,7 +282,6 @@ SESSION_REFRESH_SECONDS = int(os.environ.get("SESSION_REFRESH_HOURS", "2")) * 36
 async def _do_session_refresh() -> tuple[bool, str]:
     """Refresh the Playwright session then verify it with a real API call.
     Returns (success, message)."""
-    global _storage_mtime
     storage_path = AUTH_STORAGE_PATH or os.path.expanduser("~/.notebooklm/storage_state.json")
     if not os.path.exists(storage_path):
         msg = f"storage_state.json not found: {storage_path}"
@@ -290,21 +289,34 @@ async def _do_session_refresh() -> tuple[bool, str]:
         await _notify("session_file_missing", "storage_state.json 不存在，请重新登录", storage_path)
         return False, msg
 
-    # Step 1: Playwright page visit — renews Google cookies
     proxy_url = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or ""
     proxy = {"server": proxy_url} if proxy_url else None
+    # Use the persistent browser profile when available — it carries Google's long-lived
+    # tokens so the session is far less likely to expire than with cookies alone.
+    profile_dir = os.path.join(os.path.dirname(os.path.abspath(storage_path)), "browser_profile")
+    use_profile = os.path.isdir(profile_dir)
+
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True, proxy=proxy)
-            ctx = await browser.new_context(storage_state=storage_path)
-            page = await ctx.new_page()
-            await page.goto(
-                "https://notebooklm.google.com/",
-                wait_until="networkidle",
-                timeout=60000,
-            )
-            await ctx.storage_state(path=storage_path)
-            await browser.close()
+            if use_profile:
+                print(f"Session refresh: using persistent browser profile at {profile_dir}")
+                ctx = await p.chromium.launch_persistent_context(
+                    profile_dir,
+                    headless=True,
+                    proxy=proxy,
+                )
+                page = await ctx.new_page()
+                await page.goto("https://notebooklm.google.com/", wait_until="networkidle", timeout=60000)
+                await ctx.storage_state(path=storage_path)
+                await ctx.close()
+            else:
+                print("Session refresh: browser_profile not found, falling back to storage_state only")
+                browser = await p.chromium.launch(headless=True, proxy=proxy)
+                ctx = await browser.new_context(storage_state=storage_path)
+                page = await ctx.new_page()
+                await page.goto("https://notebooklm.google.com/", wait_until="networkidle", timeout=60000)
+                await ctx.storage_state(path=storage_path)
+                await browser.close()
         print("Session page visit succeeded, verifying with API call...")
     except Exception as e:
         msg = str(e)
@@ -312,7 +324,7 @@ async def _do_session_refresh() -> tuple[bool, str]:
         await _notify("session_refresh_failed", "NotebookLM 登录刷新失败（页面访问错误），请手动重新登录", msg)
         return False, msg
 
-    # Step 2: Verify the refreshed session actually works
+    # Verify the refreshed session actually works
     try:
         client = await NotebookLMClient.from_storage(storage_path)
         async with client:
