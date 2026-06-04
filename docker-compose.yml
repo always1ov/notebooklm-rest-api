@@ -8,6 +8,11 @@ services:
       - NOTEBOOKLM_STORAGE_PATH=/auth/storage_state.json
       - HTTP_PROXY=${HTTP_PROXY:-}
       - HTTPS_PROXY=${HTTPS_PROXY:-}
+      - WATCH_FOLDER=/uploads
+      - TRANSCRIPTIONS_FOLDER=/transcriptions
+      - DOWNSTREAM_WEBHOOK_URL=${DOWNSTREAM_WEBHOOK_URL:-}
     volumes:
       - ./auth:/auth
+      - ./uploads:/uploads
+      - ./transcriptions:/transcriptions
     restart: unless-stopped

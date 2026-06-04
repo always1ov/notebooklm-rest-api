@@ -9,7 +9,9 @@ from typing import Any, Optional, Literal, Dict
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends
+import httpx
+
+from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form, HTTPException, Depends
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from playwright.async_api import async_playwright
@@ -143,8 +145,11 @@ def _get_chat_prefix() -> str:
 # ----------------------------
 # Config / Security
 # ----------------------------
-API_KEY = os.environ.get("NOTEBOOKLM_REST_API_KEY", "")  # set this in production
-AUTH_STORAGE_PATH = os.environ.get("NOTEBOOKLM_STORAGE_PATH")  # optional override
+API_KEY = os.environ.get("NOTEBOOKLM_REST_API_KEY", "")
+AUTH_STORAGE_PATH = os.environ.get("NOTEBOOKLM_STORAGE_PATH")
+WATCH_FOLDER = os.environ.get("WATCH_FOLDER", "/uploads")
+TRANSCRIPTIONS_FOLDER = os.environ.get("TRANSCRIPTIONS_FOLDER", "/transcriptions")
+DOWNSTREAM_WEBHOOK_URL = os.environ.get("DOWNSTREAM_WEBHOOK_URL", "")
 
 
 def require_api_key(x_api_key: Optional[str] = None):
@@ -237,6 +242,13 @@ class ArtifactGenerateReq(BaseModel):
 class TaskPollResp(BaseModel):
     ok: bool
     status: Any
+
+
+class TranscribeWebhookReq(BaseModel):
+    filepath: Optional[str] = None          # full path inside container
+    filename: Optional[str] = None          # filename only — looked up in WATCH_FOLDER
+    prompt: Optional[str] = None
+    downstream_webhook_url: Optional[str] = None  # overrides DOWNSTREAM_WEBHOOK_URL env var
 
 
 # ----------------------------
@@ -724,3 +736,74 @@ async def transcribe_audio(
             os.remove(tmp_path)
         except OSError:
             pass
+
+
+# ----------------------------
+# Webhook: upstream notifies → transcribe → save txt → push downstream
+# ----------------------------
+async def _transcribe_and_notify(audio_path: str, prompt: Optional[str], downstream_url: str):
+    filename = os.path.basename(audio_path)
+    stem = os.path.splitext(filename)[0]
+    os.makedirs(TRANSCRIPTIONS_FOLDER, exist_ok=True)
+    txt_path = os.path.join(TRANSCRIPTIONS_FOLDER, f"{stem}.txt")
+
+    transcription: Optional[str] = None
+    error: Optional[str] = None
+
+    try:
+        q = prompt or os.environ.get("TRANSCRIBE_PROMPT", DEFAULT_TRANSCRIBE_PROMPT)
+        client = await NotebookLMClient.from_storage(AUTH_STORAGE_PATH) if AUTH_STORAGE_PATH else await NotebookLMClient.from_storage()
+        async with client:
+            nb = await client.notebooks.create(f"webhook_{uuid.uuid4().hex[:8]}")
+            nb_id = getattr(nb, "id", None) or (nb.model_dump() if hasattr(nb, "model_dump") else nb.__dict__).get("id")
+            await client.sources.add_file(nb_id, audio_path)
+            await asyncio.sleep(8)
+            result = await client.chat.ask(nb_id, q)
+            transcription = getattr(result, "answer", None)
+            try:
+                await client.notebooks.delete(nb_id)
+            except Exception:
+                pass
+    except Exception as e:
+        error = str(e)
+        print(f"Webhook transcribe error: {e}")
+
+    # Persist to txt
+    if transcription:
+        with open(txt_path, "w", encoding="utf-8") as f:
+            f.write(transcription)
+
+    # Push to downstream
+    if downstream_url:
+        payload = {
+            "filename": filename,
+            "txt_path": txt_path,
+            "transcription": transcription,
+            "error": error,
+        }
+        try:
+            async with httpx.AsyncClient() as http:
+                await http.post(downstream_url, json=payload, timeout=30)
+        except Exception as e:
+            print(f"Downstream webhook push failed: {e}")
+
+
+@app.post("/v1/webhook/transcribe")
+async def webhook_transcribe(req: TranscribeWebhookReq, background_tasks: BackgroundTasks):
+    """
+    Receive upstream notification, transcribe the audio in the background,
+    save result to /transcriptions/<name>.txt, then POST to downstream webhook.
+    """
+    if req.filepath:
+        audio_path = req.filepath
+    elif req.filename:
+        audio_path = os.path.join(WATCH_FOLDER, req.filename)
+    else:
+        raise HTTPException(status_code=400, detail="filepath or filename is required")
+
+    if not os.path.exists(audio_path):
+        raise HTTPException(status_code=404, detail=f"File not found: {audio_path}")
+
+    downstream_url = req.downstream_webhook_url or DOWNSTREAM_WEBHOOK_URL
+    background_tasks.add_task(_transcribe_and_notify, audio_path, req.prompt, downstream_url)
+    return {"ok": True, "accepted": True, "file": audio_path}

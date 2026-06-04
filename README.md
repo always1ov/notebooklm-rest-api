@@ -27,6 +27,7 @@ Exposes NotebookLM notebook management, source ingestion, Q&A, artifact generati
 
 ### Audio Transcription
 - `POST /v1/transcribe` — upload an audio file, get a Chinese simplified verbatim transcript in one call
+- `POST /v1/webhook/transcribe` — receive upstream webhook, transcribe audio from shared folder, save `.txt`, push result to downstream webhook
 
 ### Session Auto-Refresh
 - Built-in background task refreshes `storage_state.json` every 12 hours — no separate container needed
@@ -131,6 +132,9 @@ services:
 | `TRANSCRIBE_PROMPT` | Default transcription instruction |
 | `PROMPT_<TYPE>` | Override default prompt for an artifact type, e.g. `PROMPT_REPORT` |
 | `OUTPUT_FORMAT_<TYPE>` | Override output format for an artifact type, e.g. `OUTPUT_FORMAT_QUIZ=markdown` |
+| `WATCH_FOLDER` | Folder where upstream drops audio files (default: `/uploads`) |
+| `TRANSCRIPTIONS_FOLDER` | Folder where `.txt` transcription results are saved (default: `/transcriptions`) |
+| `DOWNSTREAM_WEBHOOK_URL` | URL to POST transcription results to after processing |
 
 ---
 
@@ -175,7 +179,7 @@ GET /v1/notebooks/{notebook_id}/artifacts/tasks/{task_id}
 GET /v1/notebooks/{notebook_id}/artifacts/download?type=report
 ```
 
-### Transcribe Audio
+### Transcribe Audio (direct upload)
 ```bash
 curl -X POST /v1/transcribe \
   -F "upload=@recording.mp3"
@@ -183,6 +187,36 @@ curl -X POST /v1/transcribe \
 ```
 
 Optional parameters: `notebook_id`, `prompt`, `keep_notebook`, `source_wait_seconds` (default 8).
+
+### Webhook Transcribe (upstream → transcribe → downstream)
+
+Upstream calls this endpoint when an MP3 is ready:
+```json
+POST /v1/webhook/transcribe
+{
+  "filename": "meeting.mp3",
+  "downstream_webhook_url": "https://your-downstream/webhook"
+}
+```
+
+- `filepath`: full path inside container (alternative to `filename`)
+- `filename`: file name only — looked up in `WATCH_FOLDER`
+- `prompt`: optional custom transcription instruction
+- `downstream_webhook_url`: overrides `DOWNSTREAM_WEBHOOK_URL` env var
+
+Returns immediately with `{"ok": true, "accepted": true}`. Processing runs in background.
+
+Downstream receives:
+```json
+{
+  "filename": "meeting.mp3",
+  "txt_path": "/transcriptions/meeting.txt",
+  "transcription": "完整转录文字……",
+  "error": null
+}
+```
+
+Every transcription is also persisted to `TRANSCRIPTIONS_FOLDER/{stem}.txt` on the host via volume mount.
 
 ---
 
