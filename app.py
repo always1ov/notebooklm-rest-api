@@ -7,9 +7,12 @@ import uuid
 import tempfile
 from typing import Any, Optional, Literal, Dict
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from playwright.async_api import async_playwright
 
 from notebooklm import NotebookLMClient, RPCError  # notebooklm-py :contentReference[oaicite:2]{index=2}
 
@@ -237,9 +240,49 @@ class TaskPollResp(BaseModel):
 
 
 # ----------------------------
+# Session auto-refresh background task (every 12 hours)
+# ----------------------------
+async def _session_refresh_loop():
+    # Wait 30 s after startup before the first refresh so the app is ready.
+    await asyncio.sleep(30)
+    while True:
+        storage_path = AUTH_STORAGE_PATH or os.path.expanduser("~/.notebooklm/storage_state.json")
+        if os.path.exists(storage_path):
+            try:
+                async with async_playwright() as p:
+                    browser = await p.chromium.launch(headless=True)
+                    ctx = await browser.new_context(storage_state=storage_path)
+                    page = await ctx.new_page()
+                    await page.goto(
+                        "https://notebooklm.google.com/",
+                        wait_until="networkidle",
+                        timeout=30000,
+                    )
+                    await ctx.storage_state(path=storage_path)
+                    await browser.close()
+                    print("Session refreshed successfully.")
+            except Exception as e:
+                print(f"Session refresh failed: {e}")
+        else:
+            print(f"Session refresh skipped: {storage_path} not found.")
+        await asyncio.sleep(43200)  # 12 hours
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    task = asyncio.create_task(_session_refresh_loop())
+    yield
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+# ----------------------------
 # App
 # ----------------------------
-app = FastAPI(title="NotebookLM REST API (powered by notebooklm-py)")
+app = FastAPI(title="NotebookLM REST API (powered by notebooklm-py)", lifespan=lifespan)
 
 
 @app.get("/health")
