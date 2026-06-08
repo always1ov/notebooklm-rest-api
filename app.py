@@ -157,7 +157,12 @@ NOTIFY_WEBHOOK_URL = os.environ.get("NOTIFY_WEBHOOK_URL", "")
 WATCH_PATHS: list[str] = [p.strip() for p in os.environ.get("WATCH_PATHS", "").split(",") if p.strip()]
 WATCH_POLL_SECONDS = int(os.environ.get("WATCH_POLL_SECONDS", "30"))
 WATCH_MIN_AGE_SECONDS = int(os.environ.get("WATCH_MIN_AGE_SECONDS", "60"))
-TRANSCRIBE_WAIT_SECONDS = int(os.environ.get("TRANSCRIBE_WAIT_SECONDS", "30"))
+# Max seconds to wait for NotebookLM to finish indexing the uploaded file.
+# Uses smart polling (exponential backoff 1s→10s), not a dumb sleep.
+# Increase for large audio files (e.g. 600 for a 1-hour recording).
+TRANSCRIBE_WAIT_SECONDS = int(os.environ.get("TRANSCRIBE_WAIT_SECONDS", "300"))
+# HTTP timeout for individual NotebookLM RPC calls (chat, create notebook, etc.)
+NOTEBOOKLM_TIMEOUT_SECONDS = float(os.environ.get("NOTEBOOKLM_TIMEOUT_SECONDS", "120"))
 AUDIO_EXTENSIONS = {".mp3"}
 # SESSION_REFRESH_HOURS is no longer used — session is refreshed on-demand when auth fails
 # Single-worker queue — files are processed strictly one at a time in order
@@ -1306,12 +1311,14 @@ _AUTH_KEYS = ("401", "403", "auth", "expired", "invalid", "sid", "cookie")
 
 async def _run_transcription(audio_path: str, q: str) -> Optional[str]:
     """Run one transcription attempt. Returns the transcription text or raises."""
-    client = await NotebookLMClient.from_storage(AUTH_STORAGE_PATH) if AUTH_STORAGE_PATH else await NotebookLMClient.from_storage()
+    _from_storage = NotebookLMClient.from_storage
+    client = await _from_storage(AUTH_STORAGE_PATH, timeout=NOTEBOOKLM_TIMEOUT_SECONDS) if AUTH_STORAGE_PATH else await _from_storage(timeout=NOTEBOOKLM_TIMEOUT_SECONDS)
     async with client:
         nb = await client.notebooks.create(f"tr_{uuid.uuid4().hex[:8]}")
         nb_id = getattr(nb, "id", None) or (nb.model_dump() if hasattr(nb, "model_dump") else nb.__dict__).get("id")
-        await client.sources.add_file(nb_id, audio_path)
-        await asyncio.sleep(TRANSCRIBE_WAIT_SECONDS)
+        # wait=True uses exponential-backoff polling (1s→10s) until NotebookLM
+        # finishes indexing the audio — correct for any file size, no blind sleep.
+        await client.sources.add_file(nb_id, audio_path, wait=True, wait_timeout=TRANSCRIBE_WAIT_SECONDS)
         result = await client.chat.ask(nb_id, q)
         transcription = getattr(result, "answer", None)
         try:
