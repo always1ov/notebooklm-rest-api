@@ -575,6 +575,18 @@ code{font-family:'Cascadia Code','Fira Code',monospace;color:#a5f3fc}
     <pre><code>curl -X POST https://notebooklm.always1ov.com/v1/scan</code><button class="copy-btn" onclick="copy(this)">复制</button></pre>
   </div>
 </div>
+<div class="card">
+  <div class="card-header" onclick="toggle(this)">
+    <span class="method delete">DELETE</span><span class="path">/v1/notebooks</span>
+    <span class="desc">一键清空所有笔记本（转录残留清理）</span>
+  </div>
+  <div class="card-body">
+    <p style="color:#f87171;margin-bottom:8px">⚠ 会删除账号下所有笔记本，不可恢复。仅用于清理转录任务留下的残留笔记本。</p>
+    <button onclick="confirmDeleteAll()" class="btn" style="background:#7f1d1d;color:#fca5a5;border:1px solid #991b1b;font-size:.82rem">删除所有笔记本</button>
+    <span id="res-del-all" style="margin-left:10px;font-size:.8rem;color:#64748b"></span>
+    <pre style="margin-top:12px"><code>curl -X DELETE https://notebooklm.always1ov.com/v1/notebooks</code><button class="copy-btn" onclick="copy(this)">复制</button></pre>
+  </div>
+</div>
 </div>
 
 <!-- ===== NOTEBOOKS ===== -->
@@ -717,6 +729,15 @@ code{font-family:'Cascadia Code','Fira Code',monospace;color:#a5f3fc}
 </div><!-- /container -->
 <script>
 function toggle(el){el.nextElementSibling.classList.toggle('open')}
+function confirmDeleteAll(){
+  if(!confirm('确认删除账号下所有笔记本？此操作不可恢复。')){return}
+  const res=document.getElementById('res-del-all');
+  res.style.color='#64748b';res.textContent='删除中...';
+  fetch('/v1/notebooks',{method:'DELETE'}).then(r=>r.json()).then(d=>{
+    if(d.ok){res.style.color='#34d399';res.textContent='✓ 已删除 '+d.deleted_count+' 个笔记本'}
+    else{res.style.color='#f87171';res.textContent='✗ '+JSON.stringify(d)}
+  }).catch(()=>{res.style.color='#f87171';res.textContent='✗ 请求失败'})
+}
 function copy(btn){
   const code=btn.previousElementSibling||btn.parentElement.querySelector('code');
   navigator.clipboard.writeText(code.innerText).then(()=>{btn.textContent='已复制';setTimeout(()=>btn.textContent='复制',1500)})
@@ -877,6 +898,26 @@ async def list_notebooks():
             return {"ok": True, "items": [nb.model_dump() if hasattr(nb, "model_dump") else nb.__dict__ for nb in nbs]}
         except RPCError as e:
             raise map_rpc_error(e)
+
+
+@app.delete("/v1/notebooks")
+async def delete_all_notebooks():
+    """Delete every notebook in the account. Use with caution."""
+    client = await get_client()
+    async with client:
+        try:
+            nbs = await client.notebooks.list()
+        except RPCError as e:
+            raise map_rpc_error(e)
+        deleted, failed = [], []
+        for nb in nbs:
+            nb_id = nb.id if hasattr(nb, "id") else (nb.model_dump() if hasattr(nb, "model_dump") else nb.__dict__).get("id")
+            try:
+                await client.notebooks.delete(nb_id)
+                deleted.append(nb_id)
+            except RPCError as e:
+                failed.append({"id": nb_id, "error": str(e)})
+        return {"ok": True, "deleted_count": len(deleted), "deleted": deleted, "failed": failed}
 
 
 @app.post("/v1/notebooks")
@@ -1316,16 +1357,17 @@ async def _run_transcription(audio_path: str, q: str) -> Optional[str]:
     async with client:
         nb = await client.notebooks.create(f"tr_{uuid.uuid4().hex[:8]}")
         nb_id = getattr(nb, "id", None) or (nb.model_dump() if hasattr(nb, "model_dump") else nb.__dict__).get("id")
-        # wait=True uses exponential-backoff polling (1s→10s) until NotebookLM
-        # finishes indexing the audio — correct for any file size, no blind sleep.
-        await client.sources.add_file(nb_id, audio_path, wait=True, wait_timeout=TRANSCRIBE_WAIT_SECONDS)
-        result = await client.chat.ask(nb_id, q)
-        transcription = getattr(result, "answer", None)
         try:
-            await client.notebooks.delete(nb_id)
-        except Exception as cleanup_err:
-            print(f"Notebook cleanup failed [{nb_id}]: {cleanup_err}")
-        return transcription
+            # wait=True uses exponential-backoff polling (1s→10s) until NotebookLM
+            # finishes indexing the audio — correct for any file size, no blind sleep.
+            await client.sources.add_file(nb_id, audio_path, wait=True, wait_timeout=TRANSCRIBE_WAIT_SECONDS)
+            result = await client.chat.ask(nb_id, q)
+            return getattr(result, "answer", None)
+        finally:
+            try:
+                await client.notebooks.delete(nb_id)
+            except Exception as cleanup_err:
+                print(f"Notebook cleanup failed [{nb_id}]: {cleanup_err}")
 
 
 async def _transcribe_and_notify(audio_path: str, prompt: Optional[str], downstream_url: str):
