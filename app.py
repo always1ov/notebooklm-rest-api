@@ -572,7 +572,9 @@ code{font-family:'Cascadia Code','Fira Code',monospace;color:#a5f3fc}
   </div>
   <div class="card-body">
     <p>扫描 WATCH_PATHS 目录，把所有稳定的 mp3 文件立即加入转录队列，不用等下次轮询。</p>
-    <pre><code>curl -X POST https://notebooklm.always1ov.com/v1/scan</code><button class="copy-btn" onclick="copy(this)">复制</button></pre>
+    <button onclick="apiCall('POST','/v1/scan','btn-scan','res-scan')" id="btn-scan" class="btn btn-primary" style="font-size:.82rem">立即扫描</button>
+    <span id="res-scan" style="margin-left:10px;font-size:.8rem;color:#64748b"></span>
+    <pre style="margin-top:12px"><code>curl -X POST https://notebooklm.always1ov.com/v1/scan</code><button class="copy-btn" onclick="copy(this)">复制</button></pre>
   </div>
 </div>
 <div class="card">
@@ -748,13 +750,22 @@ function apiCall(method,path,btnId,resId){
   btn.disabled=true; btn.textContent='请稍候...';
   res.style.color='#64748b'; res.textContent='';
   fetch(path,{method}).then(r=>r.json()).then(d=>{
-    btn.disabled=false; btn.textContent=btn.textContent.replace('请稍候...', btn.dataset.label||btn.textContent);
-    if(d.ok){res.style.color='#34d399';res.textContent='✓ 成功'}
-    else{res.style.color='#f87171';res.textContent='✗ '+d.detail}
-    // restore button text
-    btn.textContent = btn.getAttribute('data-orig') || btn.textContent;
-  }).catch(e=>{
     btn.disabled=false;
+    btn.textContent = btn.getAttribute('data-orig') || btn.textContent;
+    if(d.ok){
+      res.style.color='#34d399';
+      if(path==='/v1/scan'){
+        const n=d.queued?d.queued.length:0;
+        res.textContent = n>0 ? '✓ 已入队 '+n+' 个文件' : '✓ 暂无新文件';
+      } else {
+        res.textContent='✓ 成功';
+      }
+    } else {
+      res.style.color='#f87171';res.textContent='✗ '+(d.detail||JSON.stringify(d));
+    }
+  }).catch(()=>{
+    btn.disabled=false;
+    btn.textContent = btn.getAttribute('data-orig') || btn.textContent;
     res.style.color='#f87171';res.textContent='✗ 请求失败';
   })
 }
