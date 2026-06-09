@@ -413,11 +413,21 @@ async def _transcribe_worker():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    print("=" * 52)
+    print("NotebookLM REST API")
+    print(f"  AUTH : {AUTH_STORAGE_PATH or '~/.notebooklm/storage_state.json'}")
+    print(f"  WATCH: {', '.join(WATCH_PATHS) if WATCH_PATHS else '(not set — watcher DISABLED)'}")
+    if WATCH_PATHS:
+        print(f"  POLL : every {WATCH_POLL_SECONDS}s  MIN_AGE={WATCH_MIN_AGE_SECONDS}s")
+    print(f"  WAIT : source_ready_timeout={TRANSCRIBE_WAIT_SECONDS}s  rpc_timeout={NOTEBOOKLM_TIMEOUT_SECONDS}s")
+    print("=" * 52)
     tasks = [
         asyncio.create_task(_transcribe_worker()),
     ]
     if WATCH_PATHS:
         tasks.append(asyncio.create_task(_audio_watch_loop()))
+    else:
+        print("Audio watcher: DISABLED — set WATCH_PATHS to enable")
     yield
     for t in tasks:
         t.cancel()
