@@ -1,24 +1,42 @@
 services:
-  api:
+  notebooklm-api:
     image: ghcr.io/always1ov/notebooklm-rest-api:latest
-    ports:
-      - "8000:8000"
-      - "6080:6080"  # noVNC login UI — only needed when running /v1/start-login
-    environment:
-      - NOTEBOOKLM_REST_API_KEY=${NOTEBOOKLM_REST_API_KEY:-}
-      - NOTEBOOKLM_STORAGE_PATH=/auth/storage_state.json
-      - HTTP_PROXY=${HTTP_PROXY:-}
-      - HTTPS_PROXY=${HTTPS_PROXY:-}
-      - WATCH_PATHS=${WATCH_PATHS:-}
-      - WATCH_POLL_SECONDS=${WATCH_POLL_SECONDS:-30}
-      - WATCH_MIN_AGE_SECONDS=${WATCH_MIN_AGE_SECONDS:-60}
-      - TRANSCRIBE_WAIT_SECONDS=${TRANSCRIBE_WAIT_SECONDS:-300}
-      - NOTEBOOKLM_TIMEOUT_SECONDS=${NOTEBOOKLM_TIMEOUT_SECONDS:-120}
-      - TRANSCRIPTIONS_FOLDER=/transcriptions
-      - DOWNSTREAM_WEBHOOK_URL=${DOWNSTREAM_WEBHOOK_URL:-}
-      - NOTIFY_WEBHOOK_URL=${NOTIFY_WEBHOOK_URL:-}
-    volumes:
-      - ./auth:/auth                     # storage_state.json + browser_profile/ go here
-      - ./watch:/watch                   # mount upstream audio folder here
-      - ./transcriptions:/transcriptions # downstream reads new .txt files from here
+    container_name: notebooklm-api
     restart: unless-stopped
+
+    volumes:
+      - ./auth:/auth
+      # 存放 Google 登录认证状态，避免每次重启都要重新登录
+
+    environment:
+      - NOTEBOOKLM_REST_API_KEY=
+        # ⚠️ 填上你的 API Key，留空则无需验证，建议填写
+      - NOTEBOOKLM_STORAGE_PATH=/auth/storage_state.json
+        # Google 登录状态存储路径
+      - HTTP_PROXY=http://192.168.0.168:10809
+      - HTTPS_PROXY=http://192.168.0.168:10809
+        # 需要走代理才能访问 Google NotebookLM
+
+    labels:
+      - "traefik.enable=true"
+
+      - "traefik.http.routers.notebooklm.rule=Host(`notebooklm.always1ov.com`)"
+      - "traefik.http.routers.notebooklm.entrypoints=websecure"
+      - "traefik.http.routers.notebooklm.tls.certresolver=cloudflare"
+
+      # 纯 API 服务：
+      # - rate-limit：防止接口被频繁调用
+      # - internal-only：只允许内网访问
+      # 不加压缩和安全头：没有浏览器页面，这些对 API 意义不大
+      - "traefik.http.routers.notebooklm.middlewares=rate-limit@docker,internal-only@docker"
+
+      # 容器内部端口是 8000，Traefik 转发到这里
+      - "traefik.http.services.notebooklm.loadbalancer.server.port=8000"
+
+    networks:
+      - traefik-net
+
+networks:
+  traefik-net:
+    external: true
+    # 使用 Traefik 那边已经建好的网络，不重复创建
