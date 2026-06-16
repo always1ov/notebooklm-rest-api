@@ -17,14 +17,22 @@ services:
       - HTTP_PROXY=http://192.168.0.168:10809
       - HTTPS_PROXY=http://192.168.0.168:10809
         # 需要走代理才能访问 Google NotebookLM
-      - WATCH_PATHS=${WATCH_PATHS:-}
-      - WATCH_POLL_SECONDS=${WATCH_POLL_SECONDS:-30}
-      - WATCH_MIN_AGE_SECONDS=${WATCH_MIN_AGE_SECONDS:-60}
-      - TRANSCRIBE_WAIT_SECONDS=${TRANSCRIBE_WAIT_SECONDS:-300}
-      - NOTEBOOKLM_TIMEOUT_SECONDS=${NOTEBOOKLM_TIMEOUT_SECONDS:-120}
+      - WATCH_PATHS=
+        # 监听的音频文件夹路径，多个用逗号分隔，留空则不启用监听
+      - WATCH_POLL_SECONDS=30
+        # 轮询间隔（秒）
+      - WATCH_MIN_AGE_SECONDS=60
+        # 文件最少静置多久才处理，避免处理还在写入的文件
+      - TRANSCRIBE_WAIT_SECONDS=300
+        # 等待转录完成的最长时间（秒）
+      - NOTEBOOKLM_TIMEOUT_SECONDS=120
+        # 调用 NotebookLM 的超时时间（秒）
       - TRANSCRIPTIONS_FOLDER=/transcriptions
-      - DOWNSTREAM_WEBHOOK_URL=${DOWNSTREAM_WEBHOOK_URL:-}
-      - NOTIFY_WEBHOOK_URL=${NOTIFY_WEBHOOK_URL:-}
+        # 转录结果输出目录
+      - DOWNSTREAM_WEBHOOK_URL=
+        # 转录完成后回调的下游 Webhook，留空则不回调
+      - NOTIFY_WEBHOOK_URL=
+        # 通知用 Webhook，留空则不通知
 
     labels:
       - "traefik.enable=true"
