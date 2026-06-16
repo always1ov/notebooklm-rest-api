@@ -5,8 +5,9 @@ services:
     restart: unless-stopped
 
     volumes:
-      - ./auth:/auth
-      # 存放 Google 登录认证状态，避免每次重启都要重新登录
+      - ./auth:/auth                     # storage_state.json + browser_profile/ go here
+      - ./watch:/watch                   # mount upstream audio folder here
+      - ./transcriptions:/transcriptions # downstream reads new .txt files from here
 
     environment:
       - NOTEBOOKLM_REST_API_KEY=
@@ -16,6 +17,14 @@ services:
       - HTTP_PROXY=http://192.168.0.168:10809
       - HTTPS_PROXY=http://192.168.0.168:10809
         # 需要走代理才能访问 Google NotebookLM
+      - WATCH_PATHS=${WATCH_PATHS:-}
+      - WATCH_POLL_SECONDS=${WATCH_POLL_SECONDS:-30}
+      - WATCH_MIN_AGE_SECONDS=${WATCH_MIN_AGE_SECONDS:-60}
+      - TRANSCRIBE_WAIT_SECONDS=${TRANSCRIBE_WAIT_SECONDS:-300}
+      - NOTEBOOKLM_TIMEOUT_SECONDS=${NOTEBOOKLM_TIMEOUT_SECONDS:-120}
+      - TRANSCRIPTIONS_FOLDER=/transcriptions
+      - DOWNSTREAM_WEBHOOK_URL=${DOWNSTREAM_WEBHOOK_URL:-}
+      - NOTIFY_WEBHOOK_URL=${NOTIFY_WEBHOOK_URL:-}
 
     labels:
       - "traefik.enable=true"
