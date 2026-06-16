@@ -17,8 +17,11 @@ services:
       - HTTP_PROXY=http://192.168.0.168:10809
       - HTTPS_PROXY=http://192.168.0.168:10809
         # 需要走代理才能访问 Google NotebookLM
-      - WATCH_PATHS=
-        # 监听的音频文件夹路径，多个用逗号分隔，留空则不启用监听
+      - WATCH_PATHS=/watch
+        # 监听的音频文件夹（容器内路径），多个用逗号分隔；留空则关闭自动监听
+        # 这里对应下面挂载的 ./watch:/watch
+      - WATCH_FOLDER=/watch
+        # /transcribe 按文件名查找时的目录，需与挂载路径一致（默认是 /uploads）
       - WATCH_POLL_SECONDS=30
         # 轮询间隔（秒）
       - WATCH_MIN_AGE_SECONDS=60
